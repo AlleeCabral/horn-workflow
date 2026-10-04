@@ -1,0 +1,7 @@
+# horn-workflow - minimal production dependencies (the validated baseline).
+# Keep this list small: production artifact generation must not depend on the
+# test suite or on optional CAD/VTK/Parquet tooling.
+numpy>=1.24
+scipy>=1.10
+PyYAML>=5.4
+matplotlib>=3.6

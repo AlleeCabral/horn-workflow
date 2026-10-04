@@ -1,0 +1,45 @@
+# =============================================================================
+#  JBL 1200B - 12" subwoofer, driver data for the horn workflow
+# =============================================================================
+#  From the JBL data sheet:  250 W RMS / 1000 W peak, 91 dB @ 2.83 V / 1 m,
+#  response 34-200 Hz, 2" (50 mm) voice coil, 4 ohm, 12" frame.
+#  Electromechanical parameters below are the measured/published values supplied
+#  by the user (no longer estimates).
+# =============================================================================
+
+name: jbl_1200b
+Sd: 528.60         # effective piston area [cm^2] (measured) -> dD 259.4 mm
+# dD: 259.4        # (equivalent piston diameter, derived from Sd above)
+Mms: 154.0         # moving mass [g].  Mmd (diaphragm) = 154.0 g; the horn and the
+                   # sealed chamber supply the air loading in this model, so using
+                   # Mmd here is the consistent choice (and it reproduces the
+                   # measured Fr below).
+Cms: 1.63E-04      # suspension compliance [m/N]           (0.163 mm/N)
+Rms: 4.63          # mechanical resistance [Ns/m]          (measured)
+Bl: 13.60          # force factor [T*m]                    (measured)
+Re: 3.60           # voice-coil DC resistance [ohm]        (measured)
+Le: 2.30           # voice-coil inductance [mH]            (measured)
+Nd: 1              # voice coils
+Fr: 31.70          # measured free-air resonance [Hz] - the model checks its own fs
+                   # against this value and reports the difference
+Xmax: 11.35        # one-way linear excursion limit [mm] (data sheet); the report compares
+                   # the predicted excursion against it and says at what power it is reached
+
+fre: 10.0          # reference frequency of the AKABAK Re(f) model [kHz]
+ExpoRe: 1.0        # Re(f) = Re*(1 + f/fre)^ExpoRe  (eddy currents)
+ExpoLe: 0.618      # Xe = w*Le*(1+ExpoLe*q^2)/(1+q^2), q = w*Le/Re (AKABAK model)
+
+rear_volume: 28000.0   # [cm^3] = your fixed 28 L sealed chassis
+rear_q: 7.0            # rear cavity losses
+
+# ---------------------------------------------------------------------------
+#  Derived from the values above (printed in every report):
+#    fs  = 1/(2 pi sqrt(Mms Cms)) = 31.76 Hz   vs measured Fr 31.70 Hz  (-0.2 %)
+#    Qms = 2 pi fs Mms/Rms        = 6.65
+#    Qes = 2 pi fs Mms Re/Bl^2    = 0.595
+#    Qts = 1/(1/Qes + 1/Qms)      = 0.546
+#    Vas = rho c^2 Sd^2 Cms       = 64.6 litres
+#    sealed 28 L box: alpha = Vas/Vb = 2.31 -> box resonance 57.9 Hz, Qtc 0.997
+#  Qtc ~ 1.0 means a mild (~1 dB) bump at ~58 Hz; the horn takes over above that.
+# ---------------------------------------------------------------------------
+

@@ -1,0 +1,5 @@
+# horn-workflow - development / test-only dependencies.
+# Approved per-milestone: pytest + hypothesis only (Milestone 0/1).
+# Production code must import nothing from this file.
+pytest>=8,<10
+hypothesis>=6

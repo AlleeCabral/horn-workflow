@@ -1,0 +1,13 @@
+# horn-workflow - OPTIONAL extras, installed only when the active milestone
+# needs them and after explicit approval. Never required to run the workflow.
+#
+# milestones that would introduce each (see docs/migration-notes.md):
+#   pyarrow   -> Parquet simulation datasets (needs: columnar tabular store)
+#   trimesh   -> robust mesh validation / boolean / conversion
+#   meshio    -> mesh format conversion (MSH/VTU/STL interop)
+#   gmsh      -> automated 3D mesh generation for BEM/FEM
+#   pyvista   -> scientific field visualisation
+#   vtk       -> low-level field/mesh IO and slicing
+#   cadquery  -> real parametric B-rep STEP export
+#
+# none installed as of Milestone 0.

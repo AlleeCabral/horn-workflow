@@ -1,0 +1,123 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8"/>
+<title>hornflow - __TITLE__</title>
+<style>
+  html,body{margin:0;height:100%;font:13px system-ui,sans-serif;background:#14161a;color:#e8e8ea}
+  #wrap{display:flex;height:100%}
+  #view{flex:1;position:relative}
+  #panel{width:270px;padding:12px;background:#1c1f25;overflow:auto}
+  h1{font-size:14px;margin:.2em 0 .6em}
+  label{display:block;margin:3px 0;cursor:pointer}
+  button{margin:3px 3px 3px 0;padding:4px 8px;background:#2a2f38;color:#e8e8ea;border:1px solid #3a4150;border-radius:4px;cursor:pointer}
+  button:hover{background:#333a45}
+  .dim{color:#9aa3b2}
+  .swatch{display:inline-block;width:11px;height:11px;margin-right:6px;border-radius:2px;vertical-align:middle}
+  #info{position:absolute;left:10px;bottom:10px;color:#9aa3b2}
+  .badge{background:#2a2f38;border-radius:3px;padding:1px 5px;margin-left:6px;color:#9aa3b2;font-size:11px}
+</style>
+<link rel="stylesheet" href="ui/app.css"/>
+</head>
+<body>
+<nav id="tabs">
+  <button class="tab active" data-pane="viewer">Viewer</button>
+  <button class="tab" data-pane="workflow">Workflow</button>
+  <button class="tab" data-pane="results">Results</button>
+  <span id="strip"></span>
+</nav>
+<div id="panes">
+<section class="pane" id="pane-viewer">
+<div id="wrap">
+  <div id="view"><div id="info"></div></div>
+  <div id="panel">
+    <h1>__TITLE__</h1>
+    <div class="dim" id="meta"></div>
+    <div id="legend"></div>
+    <hr style="border-color:#2a2f38"/>
+    <button id="btnTransparent">Transparent</button>
+    <button id="btnCut">Cutaway</button>
+    <button id="btnReset">Reset view</button>
+    <button id="btnDims">Dimensions</button>
+    <button id="btnUnits">m</button>
+    <div class="dim" style="margin-top:8px">
+      Drag = orbit, right-drag = pan, wheel = zoom.
+      Colour is the material exported in the GLB (wall, outer, centreline, stations).
+    </div>
+  </div>
+</div>
+</section>
+<section class="pane inactive" id="pane-workflow"></section>
+<section class="pane inactive" id="pane-results"></section>
+</div>
+
+<script src="vendor/three.min.js"></script>
+<script src="vendor/OrbitControls.js"></script>
+<script src="vendor/GLTFLoader.js"></script>
+<script id="glb" type="application/octet-stream">__GLB_B64__</script>
+<script id="app_view" type="application/json">__APP_VIEW__</script>
+<script>
+const B64 = document.getElementById('glb').textContent.trim();
+function b64ToArrayBuffer(b64){
+  const bin = atob(b64); const len = bin.length; const bytes = new Uint8Array(len);
+  for(let i=0;i<len;i++) bytes[i]=bin.charCodeAt(i);
+  return bytes.buffer;
+}
+const container = document.getElementById('view');
+const renderer = new THREE.WebGLRenderer({antialias:true});
+renderer.setPixelRatio(devicePixelRatio); renderer.setSize(container.clientWidth, container.clientHeight);
+renderer.localClippingEnabled = true;
+container.appendChild(renderer.domElement);
+const scene = new THREE.Scene(); scene.background = new THREE.Color(0x14161a);
+const camera = new THREE.PerspectiveCamera(45, container.clientWidth/container.clientHeight, 0.01, 1000);
+const controls = new THREE.OrbitControls(camera, renderer.domElement);
+scene.add(new THREE.HemisphereLight(0xffffff, 0x333333, 1.1));
+const d1 = new THREE.DirectionalLight(0xffffff, 0.9); d1.position.set(3,5,4); scene.add(d1);
+const d2 = new THREE.DirectionalLight(0xffffff, 0.5); d2.position.set(-4,-2,-3); scene.add(d2);
+const clip = new THREE.Plane(new THREE.Vector3(-1,0,0), 0.0);
+let cutOn = false;
+
+new THREE.GLTFLoader().parse(b64ToArrayBuffer(B64), '', (gltf) => {
+  const root = gltf.scene; scene.add(root);
+  const box = new THREE.Box3().setFromObject(root);
+  const size = box.getSize(new THREE.Vector3()); const c = box.getCenter(new THREE.Vector3());
+  controls.target.copy(c);
+  camera.position.copy(c).add(new THREE.Vector3(size.length()*0.9, size.length()*0.6, size.length()*0.9));
+  controls.update();
+  document.getElementById('info').textContent =
+    'bbox ' + size.x.toFixed(2) + ' x ' + size.y.toFixed(2) + ' x ' + size.z.toFixed(2) + ' m';
+  const meshes = [];
+  root.traverse(o => { if(o.isMesh || o.isLine || o.isPoints) meshes.push(o); });
+  const legend = document.getElementById('legend');
+  meshes.forEach((m, i) => {
+    const col = (m.material && m.material.color) ? '#'+m.material.color.getHexString() : '#888';
+    const kind = m.isMesh ? 'mesh' : (m.isLine ? 'line' : 'points');
+    const el = document.createElement('label');
+    el.innerHTML = '<input type="checkbox" checked> <span class="swatch" style="background:'+col+'"></span>'
+      + (m.name || ('part '+i)) + '<span class="badge">'+kind+'</span>';
+    el.querySelector('input').addEventListener('change', e => { m.visible = e.target.checked; });
+    legend.appendChild(el);
+  });
+  document.getElementById('meta').textContent = meshes.length + ' parts';
+}, (err) => { document.getElementById('info').textContent = 'GLB parse error: ' + err; });
+
+document.getElementById('btnTransparent').onclick = () => {
+  scene.traverse(o => { if(o.isMesh && o.material && 'opacity' in o.material){
+    o.material.transparent = !o.material.transparent;
+    o.material.opacity = o.material.transparent ? 0.35 : 1.0;
+    o.material.needsUpdate = true; } });
+};
+document.getElementById('btnCut').onclick = () => {
+  cutOn = !cutOn;
+  scene.traverse(o => { if(o.isMesh && o.material){ o.material.clippingPlanes = cutOn ? [clip] : []; o.material.needsUpdate = true; } });
+};
+document.getElementById('btnReset').onclick = () => location.reload();
+addEventListener('resize', () => {
+  camera.aspect = container.clientWidth/container.clientHeight; camera.updateProjectionMatrix();
+  renderer.setSize(container.clientWidth, container.clientHeight);
+});
+(function loop(){ requestAnimationFrame(loop); controls.update(); renderer.render(scene, camera); })();
+</script>
+<script src="ui/app.js"></script>
+</body>
+</html>

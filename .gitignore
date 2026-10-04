@@ -1,0 +1,51 @@
+# ---------------------------------------------------------------------------
+#  hornflow - what is source, and what is generated
+#
+#  Rule: anything the pipeline or the test suite *produces* is ignored; anything
+#  a human wrote, or that a test *needs to read*, is tracked.
+# ---------------------------------------------------------------------------
+
+# --- generated run artifacts (never source) --------------------------------
+runs/
+results/
+
+# --- test / tooling caches --------------------------------------------------
+.hypothesis/
+.pytest_cache/
+__pycache__/
+*.py[cod]
+*.egg-info/
+.coverage
+htmlcov/
+
+# --- third-party solver distribution (do NOT commit) ------------------------
+# AKABAK Free 3.3.2 b144 (~426 MB of Windows binaries, zips and help files) is
+# unpacked into AKABAK/ for the manual GUI solve.  It is third-party software
+# redistributed by RDTeam, not part of this project, and far too large for git.
+# Keep it on disk; the pipeline only needs its path (params/environment.akabak_exe).
+# See history.md section 0 and docs/migration-notes.md.
+AKABAK/
+
+# --- editor / OS noise ------------------------------------------------------
+.vscode/
+.idea/
+*.swp
+*~
+.DS_Store
+Thumbs.db
+
+# --- local scratch ----------------------------------------------------------
+*.log
+tmp/
+scratch/
+
+# ---------------------------------------------------------------------------
+#  Tracked on purpose (do not add to the list above)
+#  * tests/fixtures/bem_export/*.vips  - real AKABAK exports used by the golden
+#    .vips parser tests.  Copied out of results/ precisely so results/ can stay
+#    generated.
+#  * tests/fixtures/baseline/          - frozen JBL numbers + curves.csv whose
+#    sha256 is asserted, so it must stay byte-identical.
+#  * hornflow/viz/viewer/vendor/       - vendored three.js r128 (MIT), needed for
+#    the offline viewer (ADR-0009).
+# ---------------------------------------------------------------------------

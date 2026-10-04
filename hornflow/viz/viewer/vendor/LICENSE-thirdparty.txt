@@ -1,0 +1,9 @@
+Third-party assets vendored under hornflow/viz/viewer/vendor/ (offline viewer):
+
+  three.min.js      three.js r128        MIT License  (c) 2010-2021 three.js authors
+  OrbitControls.js  three.js examples    MIT License
+  GLTFLoader.js     three.js examples    MIT License
+
+Source: https://unpkg.com/three@0.128.0/
+These are classic (non-module) builds so the viewer works from a plain file://
+URL with no server and no network.  No GPL/LGPL code is bundled.

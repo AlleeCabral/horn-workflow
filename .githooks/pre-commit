@@ -1,0 +1,39 @@
+#!/bin/sh
+# hornflow - refuse direct commits to main.
+#
+# Rule (CONTRIBUTING.md): every change starts on a short-lived branch.
+# Emergency override, for the baseline import only:
+#     HORNFLOW_ALLOW_MAIN_COMMIT=1 git commit ...
+set -u
+
+branch=$(git symbolic-ref --short -q HEAD || echo "")
+case "$branch" in
+  main|master) ;;
+  *) exit 0 ;;
+esac
+
+if [ "${HORNFLOW_ALLOW_MAIN_COMMIT:-}" = "1" ]; then
+  echo "pre-commit: committing to '$branch' (explicit override accepted)" >&2
+  exit 0
+fi
+
+cat >&2 <<'EOF'
+pre-commit: refusing to commit directly to 'main'.
+
+Every change starts on a short-lived branch:
+
+    git switch main && git pull
+    git switch -c feat/<short-slug>
+    ... commit on the branch, push, open a pull request ...
+
+If you already made the changes here, move them onto a branch:
+
+    git switch -c feat/<short-slug>     # keeps your work, moves HEAD
+    git commit -m "..."                 # now allowed
+
+Override (baseline/import only, not routine):
+    HORNFLOW_ALLOW_MAIN_COMMIT=1 git commit ...
+
+See CONTRIBUTING.md.
+EOF
+exit 1

@@ -1,0 +1,20 @@
+# ---------------------------------------------------------------------------
+#  Byte-identical data: never let git normalise line endings or run filters.
+#  tests/test_baseline.py asserts the sha256 of these files, and the .vips
+#  exports are CRLF by construction (AKABAK writes them that way).
+# ---------------------------------------------------------------------------
+tests/fixtures/**  -text -eol
+*.vips             -text
+
+# Vendored viewer assets are shipped exactly as upstream publishes them.
+hornflow/viz/viewer/vendor/**  -text -diff
+
+# Keep diffs readable for the things we actually edit a lot.
+*.md   text eol=lf
+*.py   text eol=lf
+*.yaml text eol=lf
+*.yml  text eol=lf
+*.json text eol=lf
+*.html text eol=lf
+*.css  text eol=lf
+*.js   text eol=lf

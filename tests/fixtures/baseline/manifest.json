@@ -1,0 +1,28 @@
+{
+  "captured_utc": "2026-10-03T16:15:57+00:00",
+  "example": "params/horn_jbl_1200b.yaml",
+  "python": "3.10.12",
+  "platform": "Linux-6.8.0-134-generic-x86_64-with-glibc2.35",
+  "git_commit": null,
+  "deterministic": true,
+  "metrics": {
+    "n_frequencies": 400,
+    "f_min_hz": 20.000000000000004,
+    "f_max_hz": 499.99999999999994,
+    "spl_band_mean_db": 104.5344,
+    "spl_band_variation_db": 8.0293,
+    "ze_min_ohm": 4.0424,
+    "ze_max_ohm": 15.6355,
+    "excursion_max_mm": 0.54858,
+    "excursion_max_at_hz": 32.7152,
+    "di_min_db": 3.0597,
+    "di_max_db": 16.2665,
+    "k_rm_at_fc": 0.8102,
+    "f_1P_validity_hz": 419.924
+  },
+  "checksums": {
+    "jbl_1200b_curves.csv": "a286aace4366bea8187d1cdfb5b3fb2974cb2bda4ab04572841d26b5085ff645",
+    "params/horn_jbl_1200b.yaml": "a604852835797a83e99b338132eb0d04e3369621c19bdc5724994d60d846e874",
+    "params/drivers/jbl_1200b.yaml": "f74cef8277e918424c68a0ce899029e95738a7eebdd15b033acce57bf5bbb276"
+  }
+}

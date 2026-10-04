@@ -1,0 +1,78 @@
+# =============================================================================
+#  horn_jbl_1200b.yaml - locked design brief
+#  JBL 1200B 12" sub + fixed sealed 28 L chassis -> rectangular horn, 60-200 Hz
+# =============================================================================
+#  Decisions already taken (derived from horn theory, not guessed):
+#    throat 260 mm      = 1.00 x the driver's Sd, direct coupled
+#    fc 62 Hz           = lowest cut-off that still satisfies the paper's mouth
+#                         criterion inside the 1500 mm depth limit
+#    mouth 16000 cm^2   = 1.60 m^2, rectangular 1599 x 999 mm (1.6 : 1, wider
+#                         than tall), k*rm = 0.81 at the cut-off
+#    depth 1499 mm      = uses the available depth limit
+#  Run:  python3 run_workflow.py params/horn_jbl_1200b.yaml
+#        python3 run_workflow.py params/horn_jbl_1200b.yaml --sweep
+# =============================================================================
+
+meta:
+  project: jbl_1200b_horn_60-200Hz
+  author: Alexandre
+  notes: >
+    62 Hz exponential horn for a JBL 1200B in its fixed sealed 28 L chassis.
+    Stage 1 = 1P horn + lumped-element driver model.
+
+target:
+  f_low: 60
+  f_high: 200
+  fc: 62              # set explicitly: the flare that fits the depth limit
+  krm_target: 0.81    # mouth criterion it achieves (paper: 0.7-1 bass horns)
+
+horn:
+  profile: exponential
+  throat_diameter: 260.0     # 1.00 x Sd of the 12" driver, direct coupled
+  length: 1499               # [mm] depth limit
+  mouth_radius: auto
+  mouth_area: 16000          # [cm^2] = 1.60 m^2
+  mouth_shape: rectangular
+  mouth_aspect: 1.6          # width / height (wider than tall)
+  coverage_angle: 45
+  tractrix_angle: 90
+
+# the driver lives in its own file (datasheet + clearly flagged estimates)
+driver: jbl_1200b.yaml
+
+simulation:
+  voltage: 2.83
+  f_min: 20
+  f_max: 500
+  n_frequencies: 400
+  spacing: log
+  c: 343.0
+  rho: 1.205
+  mouth_termination: piston_infinite_baffle
+  segments: 200
+  observation_distance: 1.0
+  directivity: piston
+
+# -----------------------------------------------------------------------------
+# Comparison mode for this driver.
+#   The primary exploration tool here is --advise (it derives mouth + depth).
+#   This sweep asks the complementary question: for each cut-off, what does a
+#   shallower or deeper box change?  With the exponential profile and both fc and
+#   depth given, the mouth follows from the geometry, so horn.mouth_area is
+#   forced back to "auto" (otherwise the explicit area would win).
+# -----------------------------------------------------------------------------
+sweep:
+  horn.mouth_area: ["auto"]
+  target.fc: [50, 59, 62, 70, 80]
+  horn.length: [1000, 1250, 1499]
+  # other axes worth trying:
+  #   horn.mouth_aspect: [1.2, 1.6, 2.0]   (build envelope only, same acoustics)
+  #   horn.profile: [exponential, hyperbolic]
+  #   horn.hyperbolic_T: [0.5, 0.7, 1.0]
+
+# keep this project's outputs separate from the example project
+output:
+  dir: results/jbl_1200b
+  csv: true
+  plots: true
+  report_md: true

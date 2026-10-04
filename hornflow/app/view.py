@@ -1,0 +1,653 @@
+"""M1 - the app view model: `app_view.json`.
+
+HornFlow stays authoritative.  This module is the **single translation point**
+from the authoritative run artifacts (`state.json`, `logs.jsonl`, the BEM
+manifest, the export folder, `deliverables/`) to the read-only model the UI
+renders.  The UI never reads `state.json` and never computes anything.
+
+Determinism: `to_json()` sorts keys and every timestamp is injectable (`now=`),
+so the same state always produces byte-identical output - which is what the
+golden tests assert.
+
+Explicit assumption (M1-M3): the per-value `status`/`provenance` audit is not yet
+stored in `state.json` (the orchestrator's `Constraint` list is report-only), so
+a value that *resolves* from the run state is labelled
+`status=FIXED, provenance=USER_INPUT, confidence=1.0` and a value that does not
+is `status=UNKNOWN`.  The brief editor (M4) will carry the real provenance.
+"""
+
+from __future__ import annotations
+
+import json
+from pathlib import Path
+
+from ..domain.evidence import now_utc
+from ..io.artifacts import atomic_write, sha256_file
+from ..workflow.stages import (OPTIONAL_STAGES, STAGE_ORDER, Stage,
+                               prerequisites)
+
+VIEW_SCHEMA = "1.0"
+
+# The eight manual-solve states, in order (the authoritative definition lives in
+# hornflow.physics.solvers.manual; repeated here only as a display order).
+BEM_STATES = (
+    "INPUTS_GENERATED", "GUI_REQUIRED", "MANUAL_SOLVE_PENDING",
+    "MANUAL_SOLVE_COMPLETED", "VIPS_IMPORTED", "BEM_COMPARISON_COMPLETED",
+    "BEM_VALIDATED", "BEM_REJECTED",
+)
+BEM_OPEN = ("GUI_REQUIRED", "MANUAL_SOLVE_PENDING", "MANUAL_SOLVE_COMPLETED")
+BEM_DECIDED = ("BEM_VALIDATED", "BEM_REJECTED")
+
+# ---------------------------------------------------------------------------
+#  the five required first-run questions (docs/app-local-multitab.md §8)
+# ---------------------------------------------------------------------------
+FIRST_RUN_QUESTIONS = (
+    {
+        "id": "Q-PRJ-01",
+        "prompt": "What is this for, and where will it stand?",
+        "wave": "A", "required": True,
+        "why": "The boundary condition changes mouth loading and the whole "
+               "path-length budget; it is the most common reason a design works "
+               "but not in situ.",
+        "fields": (
+            {"name": "deployment", "type": "text", "unit": "", "enum": None, "path": None},
+            {"name": "boundary", "type": "enum", "unit": "",
+             "enum": ["free", "wall", "corner"], "path": None},
+            {"name": "operating_orientation", "type": "enum", "unit": "",
+             "enum": ["upright", "on_side", "inverted"], "path": None},
+            {"name": "transport_orientation", "type": "enum", "unit": "",
+             "enum": ["upright", "on_side", "any"], "path": None},
+        ),
+    },
+    {
+        "id": "Q-DRV-01/02",
+        "prompt": "Which driver - and where do its numbers come from?",
+        "wave": "A", "required": True,
+        "why": "Provenance sets the confidence on every downstream number, and "
+               "the T/S set is the model.",
+        "fields": (
+            {"name": "manufacturer", "type": "text", "unit": "", "enum": None, "path": None},
+            {"name": "model", "type": "text", "unit": "", "enum": None,
+             "path": "driver.name"},
+            {"name": "data_source", "type": "enum", "unit": "",
+             "enum": ["measured", "datasheet", "estimated"], "path": None},
+            {"name": "ts_set", "type": "text", "unit": "", "enum": None, "path": None},
+        ),
+    },
+    {
+        "id": "Q-DRV-04/05+Q-ELE-02",
+        "prompt": "Driver limits - Xmax (and its convention), thermal rating, "
+                  "amp's minimum safe impedance",
+        "wave": "A", "required": True,
+        "why": "The only safety-critical questions: without them excursion and "
+               "thermal margins are untrustworthy and the impedance gate cannot "
+               "be enforced.",
+        "fields": (
+            {"name": "Xmax", "type": "number", "unit": "mm", "enum": None,
+             "path": "driver.Xmax_mm"},
+            {"name": "xmax_convention", "type": "enum", "unit": "",
+             "enum": ["one-way", "peak-to-peak"], "path": "driver.Xmax_convention"},
+            {"name": "thermal_power_w", "type": "number", "unit": "W",
+             "enum": None, "path": None},
+            {"name": "min_safe_impedance_ohm", "type": "number", "unit": "ohm",
+             "enum": None, "path": None},
+        ),
+    },
+    {
+        "id": "Q-TGT-01/02",
+        "prompt": "Band and SPL target",
+        "wave": "A", "required": True,
+        "why": "Sets the required path length and mouth area - i.e. whether the "
+               "box is physically plausible at all.",
+        "fields": (
+            {"name": "f_min_hz", "type": "number", "unit": "Hz", "enum": None,
+             "path": "constraints.acoustic.f_low_hz"},
+            {"name": "f_max_hz", "type": "number", "unit": "Hz", "enum": None,
+             "path": "constraints.acoustic.f_high_hz"},
+            {"name": "spl_continuous_db", "type": "number", "unit": "dB",
+             "enum": None, "path": None},
+            {"name": "measurement_distance_m", "type": "number", "unit": "m",
+             "enum": None, "path": None},
+        ),
+    },
+    {
+        "id": "Q-PHY-01/02+Q-MFG-01",
+        "prompt": "Envelope and manufacturing method",
+        "wave": "A", "required": True,
+        "why": "The hard size gate, the hard mass gate, and the branch that "
+               "selects the manufacturing transformer.",
+        "fields": (
+            {"name": "max_width_mm", "type": "number", "unit": "mm", "enum": None,
+             "path": None},
+            {"name": "max_height_mm", "type": "number", "unit": "mm", "enum": None,
+             "path": None},
+            {"name": "max_depth_mm", "type": "number", "unit": "mm", "enum": None,
+             "path": "constraints.physical.depth_mm"},
+            {"name": "max_external_volume_m3", "type": "number", "unit": "m^3",
+             "enum": None, "path": None},
+            {"name": "max_mass_kg", "type": "number", "unit": "kg", "enum": None,
+             "path": None},
+            {"name": "method", "type": "enum", "unit": "",
+             "enum": ["print", "plywood", "either"],
+             "path": "constraints.manufacturing.method"},
+        ),
+    },
+)
+
+
+
+# ---------------------------------------------------------------------------
+#  helpers
+# ---------------------------------------------------------------------------
+EXPORT_EXTS = (".vips", ".txt", ".csv", ".dat", ".tsv", ".asc")
+
+# deliverables we fingerprint for the artifact list (relative to the run dir)
+ARTIFACT_PATHS = (
+    "state.json", "logs.jsonl", "deliverables/report.md",
+    "deliverables/printed.stl", "deliverables/viewer/viewer.html",
+    "deliverables/viewer/scene.glb", "deliverables/bem/bem.msh",
+    "deliverables/bem/driver_le.txt", "deliverables/bem/bem_manifest.json",
+    "deliverables/bem/akabak_recipe.md", "deliverables/bem/bem_manual_report.md",
+    "deliverables/bem/compare.md", "deliverables/bem/compare.png",
+    "deliverables/bem/curves_stage2.csv",
+    "stages/LIMIT_IMPACT_ANALYSIS/limit_impact.md",
+)
+
+
+def _as_dict(state) -> dict:
+    """Accept a DesignState or an already-serialised dict."""
+    if state is None:
+        return {}
+    if hasattr(state, "to_dict"):
+        return state.to_dict()
+    return dict(state)
+
+
+def _lookup(ctx, dotted):
+    """Resolve a dotted path against nested dicts; ``None`` when absent."""
+    if not dotted:
+        return None
+    cur = ctx
+    for key in str(dotted).split("."):
+        if not isinstance(cur, dict) or key not in cur:
+            return None
+        cur = cur[key]
+    return cur
+
+
+def _read_logs(run_dir) -> dict:
+    """``{stage: {duration_s, cache, severity, artifacts}}`` from logs.jsonl."""
+    if not run_dir:
+        return {}
+    path = Path(run_dir) / "logs.jsonl"
+    if not path.is_file():
+        return {}
+    out: dict = {}
+    for line in path.read_text(encoding="utf-8", errors="replace").splitlines():
+        line = line.strip()
+        if not line:
+            continue
+        try:
+            rec = json.loads(line)
+        except ValueError:
+            continue
+        stage = rec.get("stage")
+        if not stage:
+            continue
+        rec_clean = {k: rec.get(k) for k in
+                     ("duration_s", "cache", "severity", "artifacts", "event")}
+        # keep the last event that carries a duration (stage_done), else the first
+        prev = out.get(stage)
+        if prev is None or rec_clean.get("duration_s") is not None:
+            out[stage] = rec_clean
+    return out
+
+
+def _scan_exports(export_dir) -> dict:
+    """Presence-only view of the `.vips` export folder (never parses content)."""
+    if not export_dir:
+        return {"count": 0, "newest_utc": None, "names": []}
+    d = Path(export_dir)
+    if not d.is_dir():
+        return {"count": 0, "newest_utc": None, "names": []}
+    files = sorted(p for p in d.rglob("*")
+                   if p.is_file() and p.suffix.lower() in EXPORT_EXTS)
+    newest = None
+    if files:
+        import datetime as _dt
+        newest = _dt.datetime.fromtimestamp(
+            max(p.stat().st_mtime for p in files), tz=_dt.timezone.utc
+        ).isoformat(timespec="seconds")
+    return {"count": len(files), "newest_utc": newest,
+            "names": [p.name for p in files]}
+
+
+def _artifacts(run_dir) -> list:
+    if not run_dir:
+        return []
+    run_dir = Path(run_dir)
+    out = []
+    for rel in ARTIFACT_PATHS:
+        p = run_dir / rel
+        if not p.is_file():
+            continue
+        out.append({"name": Path(rel).name, "path": rel,
+                    "bytes": p.stat().st_size, "sha256": sha256_file(p)})
+    return out
+
+
+def _list_runs(run_dir):
+    """Sibling run ids, newest last (deterministic, filesystem-derived)."""
+    if not run_dir:
+        return []
+    parent = Path(run_dir).parent
+    if not parent.is_dir():
+        return []
+    return sorted(p.name for p in parent.iterdir()
+                  if p.is_dir() and (p / "state.json").is_file())
+
+
+
+# ---------------------------------------------------------------------------
+#  section builders
+# ---------------------------------------------------------------------------
+def _questions(state: dict, first_run: bool) -> list:
+    """The five questions, with each field resolved against the run state."""
+    out = []
+    for group in FIRST_RUN_QUESTIONS:
+        fields, answered = [], 0
+        for f in group["fields"]:
+            value = None if first_run else _lookup(state, f["path"])
+            answered += 1 if value is not None else 0
+            fields.append({
+                "name": f["name"], "type": f["type"], "unit": f["unit"],
+                "enum": f["enum"], "path": f["path"], "value": value,
+                "status": "UNKNOWN" if value is None else "FIXED",
+                "provenance": None if value is None else "USER_INPUT",
+                "confidence": None if value is None else 1.0,
+            })
+        out.append({
+            "id": group["id"], "prompt": group["prompt"], "wave": group["wave"],
+            "required": group["required"], "why": group["why"],
+            "fields": fields, "fields_total": len(fields), "fields_answered": answered,
+            "blocking": bool(group["required"] and answered < len(fields) and first_run),
+        })
+    return out
+
+
+def _gates(stages: dict, logs: dict) -> list:
+    out = []
+    for stage in STAGE_ORDER:
+        name = stage.value
+        rec = dict(stages.get(name) or {})
+        log = logs.get(name) or {}
+        blocked_by = []
+        if str(rec.get("status", "pending")) == "blocked":
+            for pre in prerequisites(stage):
+                if str((stages.get(pre.value) or {}).get("status", "pending")) != "passed":
+                    blocked_by.append(pre.value)
+        out.append({
+            "stage": name,
+            "status": str(rec.get("status", "pending")),
+            "optional": stage in OPTIONAL_STAGES,
+            "detail": str(rec.get("detail", "") or ""),
+            "blocked_by": blocked_by,
+            "duration_s": log.get("duration_s"),
+            "cache": log.get("cache"),
+            "artifacts": list(log.get("artifacts") or []),
+            "failure": rec.get("failure"),
+        })
+    return out
+
+
+def _manual_bem(bem: dict, stages: dict, exports: dict) -> dict:
+    if not bem:
+        return {"state": None, "reason": None, "checklist": [], "available": False,
+                "export_dir": None, "manifest": None, "recipe": None,
+                "exported_files": exports["count"],
+                "newest_export_utc": exports["newest_utc"], "chain": list(BEM_STATES)}
+    return {
+        "state": bem.get("state"),
+        "available": True,
+        "reason": bem.get("reason"),
+        "solver": bem.get("solver"),
+        "solver_version": bem.get("solver_version"),
+        "solver_label": "AKABAK Free 3.3.2 b144",
+        "export_dir": bem.get("export_dir"),
+        "manifest": bem.get("manifest"),
+        "recipe": _recipe_path(bem),
+        "chain": list(bem.get("chain") or BEM_STATES),
+        "checklist": list(CHECKLIST_ITEMS),
+        "exported_files": exports["count"],
+        "newest_export_utc": exports["newest_utc"],
+        "next_action": bem.get("next_action"),
+    }
+
+
+CHECKLIST_ITEMS = (
+    {"key": "start", "text": "Start AKABAK (./AKABAK/akabak.sh)"},
+    {"key": "project", "text": "Open/build the project and load the mesh"},
+    {"key": "tree", "text": "Verify the BEM tree (Throat / Hornwall / Mouth)"},
+    {"key": "lem", "text": "Verify the LEM network (s/t = coil, u = front, v = rear)"},
+    {"key": "level", "text": "Set the drive level (Is rms ticked)"},
+    {"key": "solve", "text": "Solve (BEM-Meshing -> Solving -> LE -> Ob)"},
+    {"key": "export", "text": "Export the .vips spectra to the export folder"},
+    {"key": "confirm", "text": "Confirm the export folder is non-empty"},
+    {"key": "send", "text": "Send it back with the import command"},
+)
+
+
+def _recipe_path(bem: dict):
+    manifest = bem.get("manifest")
+    if not manifest:
+        return None
+    return str(Path(manifest).parent / "akabak_recipe.md")
+
+
+
+def _import_panel(bem: dict, state: dict, export_dir) -> dict:
+    run = state.get("run") or {}
+    export = bem.get("export_dir") or (str(export_dir) if export_dir else None)
+    input_path = run.get("input_path") or "<definition.yaml>"
+    command = None
+    if export:
+        command = f"python3 -m hornflow.cli {input_path} --bem-import {export}"
+    bem_state = bem.get("state") or "INPUTS_GENERATED"
+    return {
+        "available": False,            # static host: no mutation (M4 adds /api/import)
+        "ready": bem_state in ("MANUAL_SOLVE_PENDING", "MANUAL_SOLVE_COMPLETED"),
+        "state": bem_state,
+        "enabled_when_state": "MANUAL_SOLVE_COMPLETED",
+        "export_dir": export,
+        "last_source": bem.get("source"),
+        "last_utc": bem.get("imported_utc"),
+        "command": command,
+    }
+
+
+def _outcome(bem: dict, state: dict, findings: list) -> dict:
+    final = state.get("final_recommendations") or {}
+    bem_state = bem.get("state") or "INPUTS_GENERATED"
+    if bem_state in BEM_OPEN or bem_state in ("INPUTS_GENERATED", "VIPS_IMPORTED"):
+        exit_name = None
+    elif bem_state == "BEM_VALIDATED":
+        exit_name = "record_decision"
+    else:
+        exit_name = "re_export_or_relax_tolerance"
+    metrics = bem.get("metrics")
+    return {
+        "bem": bem_state,
+        "decided": _decided(state),
+        "hard_gates": bool(final.get("hard_gates_passed")),
+        "validation_passed": bem.get("validation_passed"),
+        "checks": list(bem.get("checks") or []),
+        "metrics": metrics,
+        "warnings": list(bem.get("warnings") or []),
+        "source": bem.get("source"),
+        "tolerance_db": bem.get("tolerance_db"),
+        "evidence": "BEM_SIMULATION" if metrics else None,
+        "critic": [{"check": f.get("check"), "passed": f.get("passed"),
+                    "severity": f.get("severity"), "detail": f.get("detail")}
+                   for f in (findings or [])],
+        "exit": exit_name,
+    }
+
+
+def _decided(state: dict) -> bool:
+    return any(str(e.get("event", "")).startswith("decision")
+               for e in (state.get("decision_log") or []))
+
+
+
+def _current_state(state: dict, bem_state: str, gates: list, questions: list) -> dict:
+    run = state.get("run") or {}
+    validation = state.get("validation") or {}
+    bem = validation.get("bem_manual") or {}
+    passed = sum(1 for g in gates if g["status"] == "passed")
+    failed = [g["stage"] for g in gates if g["status"] in ("failed", "blocked")]
+    assumptions = sum(1 for q in questions for f in q["fields"]
+                      if f["provenance"] in ("DEFAULT", "ESTIMATED"))
+    return {
+        "brief_revision": (validation.get("brief") or {}).get("revision"),
+        "input_hash": (validation.get("brief") or {}).get("input_hash"),
+        "run_id": run.get("run_id"),
+        "input_path": run.get("input_path"),
+        "stages_total": len(gates),
+        "stages_passed": passed,
+        "stages_failed": failed,
+        "bem_state": bem_state,
+        "bem_status": validation.get("bem_status"),
+        "solver": bem.get("solver"),
+        "solver_version": bem.get("solver_version"),
+        "solver_label": "AKABAK Free 3.3.2 b144" if bem else None,
+        "assumptions": assumptions,
+        "warnings": len(bem.get("warnings") or []),
+    }
+
+
+def _mode(state: dict, bem_state: str, gates: list) -> str:
+    if not (state.get("run") or {}).get("run_id"):
+        return "first_run"
+    if any(g["status"] in ("failed", "blocked") for g in gates):
+        return "blocked"
+    if bem_state in BEM_OPEN:
+        return "manual_bem"
+    if _decided(state):
+        return "decided"
+    if any(g["stage"] == "REPORT_AND_EXPORT" and g["status"] == "passed"
+           for g in gates):
+        return "review"
+    return "running"
+
+
+def _next_action(mode: str, gates: list, questions: list, bem_state: str,
+                 outcome: dict, import_panel: dict) -> dict:
+    """The ordered rule table (docs/app-local-multitab.md §10). First match wins."""
+    def act(aid, label, why, owner, kind="none", value=None, blockers=()):
+        return {"id": aid, "label": label, "why": why, "owner": owner,
+                "blockers": list(blockers), "cta": {"kind": kind, "value": value}}
+
+    if mode == "first_run":
+        missing = [q["id"] for q in questions if q["blocking"]]
+        if missing:
+            return act("act.brief.answer", "Answer the required questions",
+                       "Five answers make architecture selection possible.",
+                       "Requester", "none", None, missing)
+        return act("act.brief.freeze", "Freeze brief",
+                   "Freezing writes the brief and its input hash; only then can a "
+                   "run start.", "Requester")
+
+    failed = [g for g in gates if g["status"] in ("failed", "blocked")]
+    if failed:
+        g = failed[0]
+        from_stage = ((g.get("failure") or {}).get("recommended_upstream_revision")
+                      or g["stage"])
+        return act("act.rerun.from", f"Re-run from {from_stage}",
+                   g.get("detail") or "A stage did not pass.",
+                   "Acoustics", "copy_command", from_stage)
+
+    if bem_state in ("MANUAL_SOLVE_PENDING", "MANUAL_SOLVE_COMPLETED"):
+        return act("act.bem.import", "Import & validate (.vips)",
+                   "The .vips export is the last manual step; the import validates "
+                   "it and compares it with the 1-D reference.",
+                   "Builder", "copy_command", import_panel.get("command"))
+    if bem_state == "GUI_REQUIRED":
+        return act("act.bem.export", "Copy AKABAK checklist",
+                   "AKABAK runs under Wine through its GUI: do the solve, export "
+                   "the .vips spectra, then import them.",
+                   "Builder", "copy_command", import_panel.get("command"))
+
+    rejects = [c for c in (outcome.get("critic") or [])
+               if c.get("severity") == "reject" and not c.get("passed")]
+    if rejects:
+        return act("act.critic", "Re-run from <STAGE>",
+                   f"Critic: {rejects[0].get('check')}", "Acoustics")
+
+    metrics = outcome.get("metrics") or {}
+    if bem_state == "BEM_REJECTED":
+        why = "Compared but outside tolerance."
+        if metrics:
+            why = (f"Compared, worst |difference| "
+                   f"{metrics.get('worst_diff_db', 0):.2f} dB vs "
+                   f"{outcome.get('tolerance_db')} dB tolerance.")
+        return act("act.bem.retry", "Re-export and retry", why, "Builder")
+    if bem_state == "BEM_VALIDATED" and not outcome.get("decided"):
+        return act("act.decide", "Mark decided",
+                   "Validated against the 1-D reference.", "Owner")
+    return act("act.report", "Open the report",
+               "The run is complete; the report holds the decision detail.",
+               "Builder", "open_url", "deliverables/report.md")
+
+
+
+# ---------------------------------------------------------------------------
+#  annotations for the viewer's Dimensions overlay (M2, decision D1/D3)
+# ---------------------------------------------------------------------------
+def annotations_for(state, *, units: str = "m") -> dict:
+    """Dimension figures for the viewer overlay. Default unit is metres."""
+    import math
+    s = _as_dict(state)
+    ref = (s.get("reference_profiles") or [{}])[0] or {}
+    folds = s.get("fold_candidates") or []
+    fold_id = (s.get("validation") or {}).get("fold_id")
+    chosen = next((f for f in folds if f.get("fold_id") == fold_id), None)
+    if chosen is None and folds:
+        chosen = next((f for f in folds if f.get("valid")), folds[0])
+    pack = (chosen or {}).get("packaging") or {}
+
+    throat_a = ref.get("throat_area_m2")
+    mouth_a = ref.get("mouth_area_m2")
+    aspect = float(ref.get("aspect") or 1.6) or 1.6
+    mouth_w = mouth_h = None
+    if mouth_a:
+        mouth_h = math.sqrt(mouth_a / aspect)          # h = sqrt(A/aspect)
+        mouth_w = mouth_a / mouth_h                    # w = A/h  ->  w*h = A
+    bbox = None
+    if pack.get("bbox_w_m") is not None:
+        bbox = [pack["bbox_w_m"], pack["bbox_h_m"], pack["bbox_d_m"]]
+
+    bends = []
+    for i, b in enumerate((chosen or {}).get("bends") or [], start=1):
+        bends.append({
+            "id": f"B{i}",
+            "radius_m": b.get("radius_m"),
+            "angle_deg": (b.get("angle_rad") or 0.0) * 180.0 / math.pi,
+            "phase_skew_deg": b.get("phase_skew_deg"),
+            "reflection_risk": b.get("reflection_risk"),
+        })
+    return {
+        "units": units,
+        "path_length_m": ref.get("length_m"),
+        "throat_diameter_mm": (2.0 * math.sqrt(throat_a / math.pi) * 1e3)
+                              if throat_a else None,
+        "mouth_area_cm2": (mouth_a * 1e4) if mouth_a else None,
+        "mouth_width_mm": (mouth_w * 1e3) if mouth_w else None,
+        "mouth_height_mm": (mouth_h * 1e3) if mouth_h else None,
+        "bbox_m": bbox,
+        "aspect": aspect,
+        "compression_ratio": ref.get("compression_ratio"),
+        "bends": bends,
+    }
+
+
+def _rerun(gates: list) -> dict:
+    failed = [g for g in gates if g["status"] in ("failed", "blocked")]
+    from_stage = reason = None
+    if failed:
+        g = failed[0]
+        from_stage = ((g.get("failure") or {}).get("recommended_upstream_revision")
+                      or g["stage"])
+        reason = g.get("detail") or "A stage did not pass."
+    return {"available": True, "from_stage": from_stage, "reason": reason,
+            "keeps": ["brief", "decision record"],
+            "regenerates": ["run_id", "all artifacts"]}
+
+
+
+# ---------------------------------------------------------------------------
+#  public API
+# ---------------------------------------------------------------------------
+def build_view(state, *, run_dir=None, brief=None, now=None, export_dir=None,
+               runs_available=None, host: str = "static", logs=None) -> dict:
+    """Build the read-only app view model from authoritative run artifacts."""
+    s = _as_dict(state)
+    run_rec = s.get("run") or {}
+    validation = s.get("validation") or {}
+    bem = validation.get("bem_manual") or {}
+    bem_state = str(bem.get("state") or "INPUTS_GENERATED")
+    first_run = not run_rec.get("run_id")
+
+    log_map = logs if logs is not None else _read_logs(run_dir)
+    gates = _gates(s.get("stages") or {}, log_map)
+    questions = _questions(s, first_run)
+    exp_dir = export_dir
+    if exp_dir is None and run_dir is not None:
+        exp_dir = Path(run_dir) / "deliverables" / "bem" / "export"
+    exports = _scan_exports(exp_dir)
+    manual = _manual_bem(bem, s.get("stages") or {}, exports)
+    import_panel = _import_panel(bem, s, exp_dir)
+    outcome = _outcome(bem, s, s.get("critic_findings") or [])
+    mode = _mode(s, bem_state, gates)
+    project = s.get("project") or {}
+    family = ((s.get("final_recommendations") or {}).get("best_folded_horn")
+              or {}).get("family")
+    runs = runs_available if runs_available is not None else _list_runs(run_dir)
+
+    return {
+        "view_schema": VIEW_SCHEMA,
+        "generated_utc": now or now_utc(),
+        "host": host,
+        "mode": mode,
+        "project": {"name": project.get("name", ""),
+                    "author": project.get("author", "")},
+        "run": None if first_run else {
+            "run_id": run_rec.get("run_id"),
+            "input_path": run_rec.get("input_path"),
+            "brief_revision": (validation.get("brief") or {}).get("revision"),
+            "input_hash": (validation.get("brief") or {}).get("input_hash"),
+            "runs_available": list(runs),
+        },
+        "current_state": _current_state(s, bem_state, gates, questions),
+        "next_action": _next_action(mode, gates, questions, bem_state, outcome,
+                                    import_panel),
+        "gates": gates,
+        "questions": questions,
+        "manual_bem": manual,
+        "import_panel": import_panel,
+        "outcome": outcome,
+        "rerun": _rerun(gates),
+        "artifacts": _artifacts(run_dir),
+        "annotations": annotations_for(s),
+        "viewer": {
+            "title": (f"{project.get('name', '')} - {family}" if family
+                      else project.get("name", "")),
+            "html": "viewer/viewer.html",
+            "features": {"dimensions": True, "units": "m", "mm_toggle": True,
+                         "compare": False, "reference_glb": None},
+        },
+        "brief": brief if brief is not None else (s.get("requirements") or {}),
+    }
+
+
+def first_run_view(*, project=None, brief=None, now=None) -> dict:
+    """The `run: null` fixture: five required questions, no gates."""
+    view = build_view({}, now=now, brief=brief)
+    view["mode"] = "first_run"
+    view["run"] = None
+    view["current_state"]["stages_total"] = len(STAGE_ORDER)
+    if project:
+        view["project"] = {"name": project, "author": ""}
+    return view
+
+
+def to_json(view: dict) -> str:
+    """Deterministic serialisation (sorted keys) - the golden-test contract."""
+    return json.dumps(view, indent=2, sort_keys=True) + "\n"
+
+
+def emit_view(view: dict, path) -> Path:
+    """Write `app_view.json` atomically."""
+    path = Path(path)
+    atomic_write(path, to_json(view).encode("utf-8"))
+    return path
+

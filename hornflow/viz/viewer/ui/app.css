@@ -1,0 +1,105 @@
+/* hornflow app shell - tab strip + panes + dimension overlay.
+   The viewer's own markup and script are unchanged; everything here is additive. */
+
+html, body { margin: 0; height: 100%; }
+body {
+  display: flex; flex-direction: column;
+  font: 13px system-ui, sans-serif; background: #14161a; color: #e8e8ea;
+}
+
+/* ---- tab strip ---------------------------------------------------------- */
+#tabs {
+  flex: 0 0 auto; display: flex; align-items: center; gap: 4px;
+  padding: 6px 10px; background: #1c1f25; border-bottom: 1px solid #2a2f38;
+}
+#tabs .tab {
+  padding: 5px 12px; background: transparent; color: #9aa3b2;
+  border: 1px solid transparent; border-radius: 4px; cursor: pointer;
+  font: inherit;
+}
+#tabs .tab:hover { background: #23272f; color: #e8e8ea; }
+#tabs .tab.active { background: #2a2f38; color: #e8e8ea; border-color: #3a4150; }
+#strip { margin-left: auto; display: flex; align-items: center; gap: 10px;
+         color: #9aa3b2; font-size: 12px; flex-wrap: wrap; }
+#strip .sep { color: #3a4150; }
+#strip .next { color: #e8e8ea; }
+
+/* ---- panes: hidden panes keep their layout so the viewer canvas never
+   collapses to zero size (visibility, not display:none) ------------------- */
+#panes { flex: 1 1 auto; position: relative; min-height: 0; }
+.pane { position: absolute; inset: 0; overflow: auto; }
+.pane.inactive { visibility: hidden; }
+#pane-viewer { overflow: hidden; }
+
+/* ---- dimension overlay ------------------------------------------------- */
+#dims { position: absolute; inset: 0; pointer-events: none; overflow: hidden; }
+#dims .dim-label {
+  position: absolute; transform: translate(-50%, -50%);
+  padding: 1px 6px; border-radius: 3px; white-space: nowrap;
+  background: rgba(20, 22, 26, .82); border: 1px solid #3a4150;
+  color: #e8e8ea; font-size: 11px;
+}
+#dims .dim-label b { color: #9fd0ff; font-weight: 600; }
+
+/* ---- workflow tab ------------------------------------------------------ */
+#pane-workflow { padding: 14px 16px 40px; }
+.wf-band { border: 1px solid #2a2f38; border-radius: 6px; margin: 0 0 12px;
+           background: #191c22; }
+.wf-band > header {
+  display: flex; align-items: center; gap: 8px; padding: 8px 12px;
+  border-bottom: 1px solid #2a2f38; background: #1c1f25;
+  border-radius: 6px 6px 0 0;
+}
+.wf-band > header h2 { font-size: 13px; margin: 0; letter-spacing: .02em; }
+.wf-band > .body { padding: 10px 12px; }
+.wf-band.locked > .body { display: none; }
+.wf-band .kick { margin-left: auto; }
+.chip { display: inline-block; padding: 1px 7px; border-radius: 10px;
+        font-size: 11px; border: 1px solid #3a4150; color: #9aa3b2; }
+.chip.passed { color: #86efac; border-color: #2f6b45; }
+.chip.failed, .chip.blocked { color: #fca5a5; border-color: #6b2f2f; }
+.chip.running { color: #93c5fd; border-color: #2f4f6b; }
+.chip.optional, .chip.locked { color: #9aa3b2; }
+.chip.rejected { color: #fcd34d; border-color: #6b5a2f; }
+.chip.validated { color: #86efac; border-color: #2f6b45; }
+.kv { display: grid; grid-template-columns: 190px 1fr; gap: 3px 10px; }
+.kv dt { color: #9aa3b2; }
+.kv dd { margin: 0; }
+.gates { display: grid; grid-template-columns: repeat(auto-fill, minmax(240px, 1fr));
+         gap: 4px 14px; }
+.gate { display: flex; align-items: center; gap: 6px; }
+.gate .nm { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.gate .dur { margin-left: auto; color: #6b7280; font-size: 11px; }
+.na { padding: 10px 12px; border-radius: 5px; background: #23272f;
+      border: 1px solid #3a4150; }
+.na .lbl { font-weight: 600; font-size: 14px; }
+.na .why { color: #9aa3b2; margin-top: 4px; }
+.na .owner { color: #6b7280; margin-top: 2px; font-size: 12px; }
+.q { border: 1px solid #2a2f38; border-radius: 5px; padding: 8px 10px;
+     margin: 0 0 8px; }
+.q .pr { font-weight: 600; }
+.q .why { color: #9aa3b2; margin: 3px 0 6px; }
+.fields { display: grid; grid-template-columns: repeat(auto-fill, minmax(210px, 1fr));
+          gap: 4px 12px; }
+.field { display: flex; gap: 6px; align-items: baseline; }
+.field .fn { color: #9aa3b2; min-width: 130px; }
+.field .fv { color: #e8e8ea; }
+.field .fv.unknown { color: #6b7280; font-style: italic; }
+.check { display: flex; gap: 8px; align-items: baseline; padding: 2px 0; }
+.check .sev { font-size: 10px; }
+.check .ok { color: #86efac; } .check .bad { color: #fca5a5; }
+table.tbl { border-collapse: collapse; width: 100%; font-size: 12px; }
+table.tbl th, table.tbl td { text-align: left; padding: 4px 8px;
+                             border-bottom: 1px solid #2a2f38; }
+table.tbl th { color: #9aa3b2; font-weight: 500; }
+code, pre { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; }
+pre.cmd { background: #101216; border: 1px solid #2a2f38; border-radius: 4px;
+          padding: 8px 10px; overflow-x: auto; margin: 6px 0 0; }
+.btn { padding: 4px 10px; background: #2a2f38; color: #e8e8ea;
+       border: 1px solid #3a4150; border-radius: 4px; cursor: pointer; font: inherit; }
+.btn[disabled] { opacity: .5; cursor: default; }
+.btn.primary { background: #2f4f6b; border-color: #3f6f9b; }
+.muted { color: #6b7280; }
+details.tb summary { cursor: pointer; color: #9aa3b2; }
+.placeholder { color: #9aa3b2; border: 1px dashed #3a4150; border-radius: 6px;
+               padding: 24px; text-align: center; }

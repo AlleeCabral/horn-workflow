@@ -1,0 +1,60 @@
+// ************************************************************
+//
+// Akabak-Demo   Spectrum Data  9/23/2026 11:52:24 PM
+//
+// ************************************************************
+ 
+SourceDesc=VACS_Data_Text
+Version=3.3.2 b144 - 64
+Author="RDTeam"
+SourceDesc="Akabak-Demo"
+IsInterface=true
+Command=NoInheritance
+StartString_Absc=Abscissa
+EndString_Absc=Abscissa_End
+StartString_Data=Data
+EndString_Data=Data_End
+ 
+// ------------------------------------------------------------
+ 
+Data_Format=Complex
+Data_LevelType=Peak
+Data_Domain=Frequency
+Data_AbscUnit=Hz
+Data_BaseUnit=V
+Data_IsContPhase=false
+Data_Legend="Voltage  Elec-Dyn Driver Dyn1"
+Graph_Caption="LE (pot & flow) - LE7"
+Graph_Type=Cartesian
+Graph_New=true
+Graph_BodeType=Complex
+Graph_zAxis_Units=V
+Graph_Param_AsYAxis=Param
+Param_Identifier="ID9075238390/386-0"
+Graph_Group="AKABAK-Rad1_23Sept26 $$$ID9075238390$$$"
+Data
+60   4.00222438151586 0   
+63.2244571102729   4.00222438151586 0   
+66.6221996148122   4.00222438151586 0   
+70.2025400356455   4.00222438151586 0   
+73.9752913585981   4.00222438151586 0   
+77.9507939286937   4.00222438151586 0   
+82.1399437909403   4.00222438151586 0   
+86.5542225541754   4.00222438151586 0   
+91.2057288598246   4.00222438151586 0   
+96.1072115418193   4.00222438151586 0   
+101.272104568561   4.00222438151586 0   
+106.714563862701   4.00222438151586 0   
+112.449506099647   4.00222438151586 0   
+118.492649591142   4.00222438151586 0   
+124.860557365962   4.00222438151586 0   
+131.570682565817   4.00222438151586 0   
+138.641416280864   4.00222438151586 0   
+146.09213795595   4.00222438151586 0   
+153.943268505734   4.00222438151586 0   
+162.216326284266   4.00222438151586 0   
+170.933986062427   4.00222438151586 0   
+180.120141174865   4.00222438151586 0   
+189.799969006776   4.00222438151586 0   
+200   4.00222438151586 0   
+Data_End
