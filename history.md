@@ -294,6 +294,42 @@ python3 -m pytest tests/ -q                              # 122 checks
 * Docs: `docs/app-local-multitab.md` §20.1 (status + implementation notes),
   `docs/adr.md` ADR-0011, `docs/ui-two-tab-mvp.md` D3 (metres), `README.md`.
 
+## 2026-10-04 — the project becomes a git repository
+
+* `git init -b main`; the whole tree is now versioned except what is generated.
+* **Ignore policy** (`.gitignore`): `runs/` and `results/` (both generated),
+  `AKABAK/` (426 MB of third-party Windows binaries — RDTeam's distribution, not
+  ours), `.hypothesis/`, `.pytest_cache/`, `__pycache__/`, editor noise. The
+  tracked tree is **130 files / 3.0 MB**. `AKABAK/` stays on disk; the pipeline
+  only needs its path.
+* **Moved the `.vips` test data** from `results/jbl_1200b/bem/export/` to
+  `tests/fixtures/bem_export/` (21 files, 288 KB) and pointed
+  `tests/test_bem_manual.py` at the new path, so `results/` can be ignored
+  wholesale. This is the one behaviour-free refactor in the change.
+* **`.gitattributes`**: `tests/fixtures/**` and `*.vips` are `-text`, because
+  `tests/test_baseline.py` asserts the sha256 of the frozen `curves.csv` and the
+  AKABAK exports are CRLF by construction.
+* **Branch rules** (`CONTRIBUTING.md`): `main` is read-only; every change starts
+  on `<type>/<slug>` and lands through a PR; Conventional Commits; one logical
+  change per commit; both suites must pass on the branch tip; the four working
+  documents (`history.md`, `handoff.md`, `docs/adr.md`, `docs/migration-notes.md`)
+  move in the same PR as the change they describe.
+* **Enforcement**: `.githooks/pre-commit` refuses to commit while `HEAD` is
+  `main` (override `HORNFLOW_ALLOW_MAIN_COMMIT=1`, used once for the baseline
+  import). Enabled with `git config core.hooksPath .githooks`. A PR template
+  (`.github/pull_request_template.md`) asks for the two test result lines, the
+  honest cost, and the deferrals.
+* **CI**: `.github/workflows/ci.yml` runs the legacy checks, the frozen baseline,
+  the pytest suite and both CLI entry points on Python 3.10–3.12, and asserts the
+  generated viewer shell is self-contained.
+* The baseline import is commit `c421f86` on `main`; the repository-process change
+  is on the branch `chore/repo-process-and-ci`, ready to push.
+* Remote: `origin = git@github.com:AlleeCabral/horn-workflow.git` (SSH auth
+  verified: `Hi AlleeCabral!`). The GitHub repository does not exist yet —
+  `gh` is not installed and there is no token in this environment, so the remote
+  has to be created before the first push.
+* Tests: legacy **147/147**; pytest **122 passed** (unchanged by the fixture move).
+
 # CURRENT STATE
 
 **Model (GUI, `~/AI projects/horn design/Saved/`):**
