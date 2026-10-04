@@ -330,8 +330,74 @@ python3 -m pytest tests/ -q                              # 122 checks
   has to be created before the first push.
 * Tests: legacy **147/147**; pytest **122 passed** (unchanged by the fixture move).
 
-# CURRENT STATE
+## 2026-10-04 — Phase 1: the excursion convention, and the W4 completion contract
 
+Branch `fix/excursion-rms-and-workflow-contract` (2 commits, local; the remote
+repository still does not exist).
+
+### 1a — rms vs peak excursion (a real data error, in the unsafe direction)
+
+* **Proved the convention from the generating calculation**, not from the label:
+  `response.simulate()` drives the lumped-element network with `sim.voltage` in
+  **volts rms**, so `current = V/Ze`, `velocity = Bl·I/Zm` and
+  `excursion = velocity/(jω)` are all rms phasors (cross-check: `I_abs` = 0.6937 A
+  = 2.83/4.079 exactly).
+* Therefore the `curves.csv` column named `excursion_peak_mm` held **rms**. Every
+  "Xmax is reached at …" figure was optimistic by √2 in voltage and **2× in power**:
+  the report said **~59 V / ~952 W**, the truth is **~41 V rms / ~476 W**. The hard
+  gate also compared rms travel against a one-way-peak Xmax.
+* **`hornflow/domain/excursion.py` is new and is the single source of truth**:
+  `RMS_TO_PEAK`, the Xmax convention (`one_way_peak` default, `peak_to_peak`
+  converted by /2, validated — never guessed), `summarize()` and `excursion_gate()`.
+  `driver.Xmax_convention` is now a validated field with `Xmax_one_way_peak`.
+* **curves.csv v2**: `… I_abs, excursion_rms_mm, excursion_peak_mm, p_abs_Pa …`.
+  New `report.read_csv()` detects the v1 header, migrates **in memory** with an
+  explicit note, and never reinterprets the numbers.
+* **state.json 1.0 → 1.1** with a registered migration that renames
+  `simulation_runs[].excursion_m` → `excursion_rms_m`, derives `excursion_peak_m`,
+  and **records itself** in the new `state.migrations` list (explicit, not silent).
+* Updated: `report.py` (CSV, guidance, `excursion_power_text` now takes the summary),
+  `plots.py`, `advise.py` (also fixed the `×7.07` "100 W" fudge to `√(100·Re)/V₀`
+  = 6.74), `gates.py`, `sweep.py`, `sensitivity.py`, `webster.py` (both columns in
+  the normalized run schema), `reporting/markdown.py`, `orchestrator.py`.
+* **Baseline regenerated once, deliberately.** Every physical metric is unchanged
+  (104.5344 dB, 8.0293 dB, Zmin 4.0424 Ω); the manifest now carries
+  `excursion_rms_max_mm` 0.54858 **and** `excursion_peak_max_mm` 0.77581.
+* The corrected report line now reads: *"0.55 mm rms / 0.78 mm one-way peak at
+  33 Hz with 2.83 V rms – the peak travel is 7 % of the driver's 11.4 mm Xmax
+  (one-way peak) … about 41 V rms (~476 W)"*.
+
+### 1b — W4 could say "wave A complete" with required values blank
+
+* **Root cause:** `app.js` computed group and wave completion itself (counting any
+  non-null value as answered, and marking a group blocking only on a *first run*).
+  A **path-less required field could never be answered at all**, so the old model's
+  numbers were doubly wrong.
+* **Fix:** `app/view.py` now emits `completion` (per-field `accepted`, per-group
+  `complete`/`required_answered`/`blocked_by`/`first_unanswered`, per-wave
+  `complete`, and a flat `blockers` list with `next_required_field`). Acceptance
+  requires present + not-UNKNOWN + provenance + confidence; optional blanks never
+  block; `app.js` renders and no longer computes.
+* Field resolution order is now brief-by-path → brief-by-key → run-state-by-path,
+  which is what makes the path-less required fields answerable.
+* Human labels + help text moved into the model (`FIELD_LABELS`, `FIELD_HELP`,
+  `OPTIONAL_FIELDS`); the internal key survives only as a tooltip.
+* **Honest numbers on the real JBL run:** 7 of 20 required answers, 13 blockers,
+  wave A **incomplete**, next required = "What is it for?" — where the old UI said
+  the opposite. 20 required of 22 declared fields (2 optional).
+* `view_schema` 1.0 → 1.1. W4's field rows are now label-once / value-once /
+  provenance-below, with a left rule on the fields that actually need input.
+
+### Tests
+
+legacy **147/147**; pytest **122 → 159 passed** (new `test_excursion_convention.py`,
+27 tests; 10 new completion tests in `test_app_view.py`). One old test that encoded
+the *wrong* behaviour ("no group is blocking when a run exists") was replaced with
+the honest contract. A real pipeline run still produces a viewer with
+`view_schema 1.1` and the corrected excursion wording.
+
+
+# CURRENT STATE
 **Model (GUI, `~/AI projects/horn design/Saved/`):**
 
 | item | value |

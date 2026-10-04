@@ -212,7 +212,7 @@ Derived, not guessed:
 | depth | **1500 mm** | your limit, fully used |
 | predicted band | **60-200 Hz, 104.5 dB mean, 8.0 dB p-p** at 2.83 V / 1 m | Stage-1 model |
 | gain over the same driver direct-radiating | **+13 dB average** in 60-200 Hz | why the horn is worth building |
-| excursion | 0.55 mm peak at 2.83 V = **5 % of the 11.35 mm Xmax** | Xmax would be reached at ~59 V / ~950 W, so it is thermally limited, not travel limited |
+| excursion | 0.55 mm **rms** / 0.78 mm **one-way peak** at 2.83 V rms = **7 % of the 11.35 mm Xmax** | Xmax would be reached at ~41 V rms / ~476 W, so it is thermally limited, not travel limited |
 
 **Hard limit from physics:** with 260 mm throat and 1500 mm depth, the lowest cut-off
 that still meets the mouth criterion is **58.7 Hz**. Lower than that needs a deeper
@@ -310,7 +310,7 @@ exactly the parameters the ATH/ABEC LE scripts use, so Stage 2 can reuse them.
 | **k·rm** | mouth circumference measured in wavelengths at the cut-off; below ~0.7 the response gets peaky |
 | **1P / Webster model** | the simple one-dimensional theory this tool uses (plane wave-fronts) |
 | **BEM** | the 3D numerical method AKABAK uses for the full picture (Stage 2) |
-| **excursion** | how far the diaphragm moves; compare with the driver's Xmax |
+| **excursion** | how far the diaphragm moves. The solver drives the network in **volts rms**, so its excursion column is **rms**; the report states both rms and one-way peak, and the **peak** figure is the one to compare with the driver's Xmax (data sheets quote Xmax one-way peak) |
 | **variation** | peak-to-peak wobble of the on-axis response inside your band; smaller = flatter |
 | **DI** | directivity index: how much the horn concentrates sound forward |
 | **rear chamber** | the box behind the driver (your fixed 28 L chassis) |
@@ -325,7 +325,8 @@ measured `Fr`: the fs implied by `Mms`/`Cms` comes out **31.77 Hz vs 31.70 Hz
 
 `Xmax` is optional but useful: when it is present the report says what fraction of
 it the predicted excursion uses and at what drive voltage/power Xmax would be
-reached (for this design: 0.55 mm at 2.83 V, and Xmax at ~59 V ≈ 950 W - so it is
+reached (for this design: 0.55 mm rms / 0.78 mm one-way peak at 2.83 V rms, and
+Xmax at ~41 V rms ~ 476 W - so it is
 thermally limited, not travel limited).
 
 ## Tests

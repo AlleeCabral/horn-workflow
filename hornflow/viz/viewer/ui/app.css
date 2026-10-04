@@ -79,12 +79,23 @@ body {
      margin: 0 0 8px; }
 .q .pr { font-weight: 600; }
 .q .why { color: #9aa3b2; margin: 3px 0 6px; }
-.fields { display: grid; grid-template-columns: repeat(auto-fill, minmax(210px, 1fr));
-          gap: 4px 12px; }
-.field { display: flex; gap: 6px; align-items: baseline; }
-.field .fn { color: #9aa3b2; min-width: 130px; }
-.field .fv { color: #e8e8ea; }
-.field .fv.unknown { color: #6b7280; font-style: italic; }
+.fields { display: grid; grid-template-columns: repeat(auto-fit, minmax(240px, 1fr));
+          gap: 6px 18px; margin-top: 2px; }
+/* One field = label + value on one line, provenance beneath.  The value never
+   wraps under the label, so nothing can overlap at any viewport width. */
+.field { display: block; min-width: 0; padding: 3px 0; }
+.field.needs { border-left: 2px solid #6b2f2f; padding-left: 8px; }
+.field .fline { display: flex; gap: 8px; align-items: baseline;
+                justify-content: space-between; min-width: 0; }
+.field .fl { color: #c8cdd6; min-width: 0; overflow-wrap: anywhere; }
+.field .fv { color: #e8e8ea; white-space: nowrap; font-variant-numeric: tabular-nums; }
+.field .fv.unknown { color: #9aa3b2; }
+.field.needs .fv.unknown { color: #fca5a5; }
+.field .fmeta { font-size: 11px; margin-top: 1px; overflow-wrap: anywhere; }
+.field .fhelp { font-size: 11px; margin-top: 1px; }
+.nextq { margin: 6px 0 2px; display: flex; gap: 6px; align-items: baseline;
+         flex-wrap: wrap; }
+.nextq .kick { color: #9aa3b2; font-size: 11px; }
 .check { display: flex; gap: 8px; align-items: baseline; padding: 2px 0; }
 .check .sev { font-size: 10px; }
 .check .ok { color: #86efac; } .check .bad { color: #fca5a5; }

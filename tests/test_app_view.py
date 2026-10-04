@@ -41,6 +41,150 @@ def _built(state=None, **kw):
 
 
 # ---------------------------------------------------------------------------
+#  Phase 1b - completion is computed by the model, never by the UI
+# ---------------------------------------------------------------------------
+# The regression this section locks down: the old W4 showed "wave A complete"
+# while several required values were blank, because the model marked a group
+# blocking only on a *first run* and counted any non-null value as answered.
+def test_wave_a_is_not_complete_while_required_values_are_unanswered():
+    """The contradictory-W4 regression fixture.
+
+    The real JBL run resolves 7 of the 20 required answers from the run state.
+    The model must therefore say wave A is NOT complete and must name the
+    blockers - the old model said the opposite.
+    """
+    view = _built()
+    c = view["completion"]
+    assert c["run_exists"] is True
+    assert c["complete"] is False
+    assert c["wave_a_complete"] is False
+    assert c["required_fields_total"] == 20
+    assert c["required_fields_answered"] == 7
+    assert c["blocker_count"] == 13
+    assert all(not q["complete"] for q in view["questions"])
+    # every blocker names the group, the internal key and a human label
+    for b in c["blockers"]:
+        assert b["group"] and b["field"] and b["label"]
+    # and the header numbers agree with the group rows
+    cs = view["current_state"]
+    assert cs["wave_a_complete"] is False
+    assert cs["required_fields_answered"] == 7
+    assert cs["required_fields_total"] == 20
+    assert cs["blocker_count"] == 13
+
+
+def test_first_run_reports_zero_of_twenty_required():
+    view = V.first_run_view(project="JBL 1200B", now=FIXED_NOW)
+    c = view["completion"]
+    assert c["run_exists"] is False
+    assert c["required_fields_answered"] == 0
+    assert c["required_fields_total"] == 20
+    assert c["complete"] is False and c["wave_a_complete"] is False
+    assert c["blocker_count"] == 20
+    assert view["current_state"]["questions_complete"] is False
+
+
+def test_unknown_never_counts_as_answered():
+    view = _built()
+    for q in view["questions"]:
+        for f in q["fields"]:
+            if f["status"] == "UNKNOWN":
+                assert f["accepted"] is False
+                assert f["provenance"] is None
+                assert f["source"] is None
+
+
+def test_group_complete_only_when_every_required_field_is_accepted():
+    """A group flips to complete only when its last required field arrives."""
+    state = _state()
+    partial = _built(state, brief={"constraints": {"acoustic": {
+        "f_low_hz": 60.0, "f_high_hz": 200.0}}})["questions"]
+    g = {q["id"]: q for q in partial}["Q-TGT-01/02"]
+    assert g["required_total"] == 4
+    assert g["required_answered"] == 2
+    assert g["complete"] is False
+    assert g["blocked_by"] == ["spl_continuous_db", "measurement_distance_m"]
+
+    full = _built(state, brief={"constraints": {"acoustic": {
+        "f_low_hz": 60.0, "f_high_hz": 200.0}},
+        "spl_continuous_db": 120.0,
+        "measurement_distance_m": 1.0})["questions"]
+    g2 = {q["id"]: q for q in full}["Q-TGT-01/02"]
+    assert g2["required_answered"] == 4
+    assert g2["complete"] is True
+    assert g2["blocked_by"] == []
+    assert g2["first_unanswered"] is None
+    # and the field-level model agrees
+    fields = {f["key"]: f for f in g2["fields"]}
+    assert fields["spl_continuous_db"]["accepted"] is True
+    assert fields["spl_continuous_db"]["source"] == "brief"
+    assert fields["spl_continuous_db"]["provenance"] == "USER_INPUT"
+    assert fields["spl_continuous_db"]["confidence"] == 1.0
+
+
+def test_a_pathless_required_field_is_answerable_from_the_brief():
+    """Regression: path-less required fields must not be permanently unanswerable."""
+    view = V.first_run_view(now=FIXED_NOW,
+                            brief={"max_width_mm": 600.0, "max_height_mm": 900.0,
+                                   "max_depth_mm": 1500.0, "max_mass_kg": 60.0,
+                                   "method": "plywood"})
+    g = {q["id"]: q for q in view["questions"]}["Q-PHY-01/02+Q-MFG-01"]
+    assert g["complete"] is True, g["blocked_by"]
+    assert g["required_answered"] == 5
+
+
+def test_optional_blank_does_not_block_completion():
+    """Optional blanks never block; a required sibling still does."""
+    view = _built()
+    by_id = {q["id"]: q for q in view["questions"]}
+
+    proj = by_id["Q-PRJ-01"]
+    pf = {f["key"]: f for f in proj["fields"]}
+    assert pf["transport_orientation"]["required"] is False
+    assert pf["boundary"]["required"] is True
+    assert "transport_orientation" not in proj["blocked_by"]
+    assert set(proj["blocked_by"]) == {"deployment", "boundary",
+                                       "operating_orientation"}
+
+    env = by_id["Q-PHY-01/02+Q-MFG-01"]
+    ef = {f["key"]: f for f in env["fields"]}
+    assert ef["max_external_volume_m3"]["required"] is False
+    assert ef["max_width_mm"]["required"] is True
+    assert "max_external_volume_m3" not in env["blocked_by"]
+    assert set(env["blocked_by"]) == {"max_width_mm", "max_height_mm",
+                                      "max_mass_kg"}
+    # 20 required of 22 declared fields: exactly the two optional ones drop out
+    assert view["completion"]["required_fields_total"] == 20
+    assert sum(len(q["fields"]) for q in view["questions"]) == 22
+
+
+def test_next_required_field_is_the_first_blocker_with_a_label():
+    for view in (_built(), V.first_run_view(now=FIXED_NOW)):
+        nxt = view["completion"]["next_required_field"]
+        assert nxt == view["completion"]["blockers"][0]
+        assert nxt["field"] == "deployment"
+        assert nxt["label"] == "What is it for?"
+
+
+def test_wave_completion_requires_every_required_group():
+    c = V.first_run_view(now=FIXED_NOW)["completion"]
+    wave = c["waves"]["A"]
+    assert wave["required_groups"] == 5
+    assert wave["complete_groups"] == 0
+    assert wave["complete"] is False
+    assert len(wave["blocked_by"]) == 5
+
+
+def test_completion_is_emitted_by_the_model_not_derived_in_the_ui():
+    """The Workflow renderer must read completion, never compute it."""
+    js = (ROOT / "hornflow" / "viz" / "viewer" / "ui" / "app.js").read_text(
+        encoding="utf-8")
+    assert "completion" in js
+    for forbidden in ("fields_answered >=", "required_answered ===",
+                      "required_total -", "blockers.length === 0"):
+        assert forbidden not in js, forbidden
+
+# ---------------------------------------------------------------------------
 #  M1 - determinism (the golden contract)
 # ---------------------------------------------------------------------------
 def test_view_is_byte_identical_for_the_same_state():
@@ -97,12 +241,25 @@ def test_first_run_is_deterministic():
 def test_questions_resolve_from_the_run_state():
     view = _built()
     by_id = {q["id"]: q for q in view["questions"]}
-    fields = {f["name"]: f for f in by_id["Q-TGT-01/02"]["fields"]}
+    fields = {f["key"]: f for f in by_id["Q-TGT-01/02"]["fields"]}
     assert fields["f_min_hz"]["value"] == 60.0
     assert fields["f_max_hz"]["value"] == 200.0
     assert fields["f_min_hz"]["status"] == "FIXED"
+    assert fields["f_min_hz"]["source"] == "run_state"
     assert fields["spl_continuous_db"]["value"] is None      # not in the audit yet
-    assert not any(q["blocking"] for q in view["questions"])  # a run exists
+
+
+def test_questions_carry_human_labels_and_the_internal_key():
+    """The primary label is human-readable; the key stays for a tooltip only."""
+    view = _built()
+    for q in view["questions"]:
+        for f in q["fields"]:
+            assert f["label"] and f["label"] != f["key"]
+            assert f["key"], "the internal key must survive for a tooltip"
+    by_id = {q["id"]: q for q in view["questions"]}
+    fields = {f["key"]: f for f in by_id["Q-TGT-01/02"]["fields"]}
+    assert fields["f_min_hz"]["label"] == "Lowest required frequency"
+    assert fields["f_min_hz"]["unit"] == "Hz"
 
 
 def test_gates_cover_all_sixteen_stages_and_flag_the_optional_one():

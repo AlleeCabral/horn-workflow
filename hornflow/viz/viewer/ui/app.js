@@ -256,32 +256,68 @@
     return b.root;
   }
 
+  // Everything below is READ FROM view.completion / view.questions.  The browser
+  // never decides whether a group or a wave is complete - that arithmetic lives
+  // in hornflow/app/view.py (the old renderer computed it here, which is how W4
+  // could say "wave A complete" while required values were blank).
+  function fieldRow(f) {
+    var isSet = f.accepted === true;
+    var val = isSet ? (fmt(f.value, 3) + (f.unit ? ' ' + f.unit : ''))
+                    : (f.required ? 'Required' : 'Optional');
+    var wrap = h('div', { class: 'field' + (f.required && !isSet ? ' needs' : '') });
+    wrap.appendChild(h('div', { class: 'fline' }, [
+      h('span', { class: 'fl', text: f.label,
+                  title: f.key + (f.help ? ' \u2014 ' + f.help : '') }),
+      h('span', { class: 'fv' + (isSet ? '' : ' unknown'), text: val })
+    ]));
+    var meta = [f.required ? 'required' : 'optional'];
+    if (isSet) { meta.push('answered'); }
+    if (f.provenance) { meta.push(String(f.provenance).toLowerCase()); }
+    if (f.source) { meta.push('from ' + String(f.source).replace('_', ' ')); }
+    if (f.enum) { meta.push('one of: ' + f.enum.join(' / ')); }
+    wrap.appendChild(h('div', { class: 'fmeta muted', text: meta.join(' \u00b7 ') }));
+    if (f.help && !isSet) {
+      wrap.appendChild(h('div', { class: 'fhelp muted', text: f.help }));
+    }
+    return wrap;
+  }
+
   // ---------------------------------------------------------------- W4
   function bandQuestions() {
     var qs = view.questions || [];
-    var missing = qs.filter(function (q) { return q.blocking; }).length;
-    var b = band('W4 \u00b7 required questions', missing
-      ? { text: missing + ' blocking', cls: 'failed' }
-      : { text: 'wave A complete', cls: 'passed' });
+    var comp = view.completion || {};
+    var blockers = comp.blocker_count || 0;
+    var b = band('W4 \u00b7 required questions', blockers
+      ? { text: blockers + ' blocking', cls: 'failed' }
+      : { text: 'all required answered', cls: 'passed' });
+
+    if (comp.required_fields_total) {
+      b.body.appendChild(h('div', { class: 'muted' }, [
+        h('strong', { text: (comp.required_fields_answered || 0) + ' of '
+                           + comp.required_fields_total + ' required answers' }),
+        h('span', { text: '  \u00b7  wave A is '
+                           + (comp.wave_a_complete ? 'complete' : 'incomplete') })
+      ]));
+    }
+    if (comp.next_required_field) {
+      var nx = comp.next_required_field;
+      b.body.appendChild(h('div', { class: 'nextq' }, [
+        h('span', { class: 'muted', text: 'Next required: ' }),
+        h('strong', { text: nx.label }),
+        h('span', { class: 'kick', text: nx.field })
+      ]));
+    }
+
     qs.forEach(function (q) {
       var box = h('div', { class: 'q' });
       box.appendChild(h('div', {}, [
         h('span', { class: 'pr', text: q.prompt }),
-        h('span', { class: 'chip ' + (q.blocking ? 'failed' : 'passed') + ' kick',
-                    text: q.fields_answered + '/' + q.fields_total })
+        h('span', { class: 'chip ' + (q.complete ? 'passed' : 'failed') + ' kick',
+                    text: q.required_answered + '/' + q.required_total + ' required' })
       ]));
       box.appendChild(h('div', { class: 'why', text: q.why || '' }));
       var fields = h('div', { class: 'fields' });
-      (q.fields || []).forEach(function (f) {
-        var unanswered = (f.value === null || f.value === undefined);
-        fields.appendChild(h('div', { class: 'field' }, [
-          h('span', { class: 'fn', text: f.name + (f.unit ? ' [' + f.unit + ']' : '') }),
-          h('span', { class: 'fv' + (unanswered ? ' unknown' : ''),
-                      text: unanswered ? 'unanswered'
-                                       : fmt(f.value, 3) + (f.unit ? ' ' + f.unit : '') }),
-          h('span', { class: 'chip', text: f.status || 'UNKNOWN' })
-        ]));
-      });
+      (q.fields || []).forEach(function (f) { fields.appendChild(fieldRow(f)); });
       box.appendChild(fields);
       b.body.appendChild(box);
     });

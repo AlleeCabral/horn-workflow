@@ -59,8 +59,13 @@ OPEN ITEMS
    infinite-baffle re-solve below so the -8.7 dB offset closes and the folded candidate
    passes BEM_VALIDATED at the default 6 dB tolerance. The importer already reports
    mean -8.68 dB / worst 11.64 dB on the Rad1_23Sept26 export.
-2. excursion_peak_mm in curves.csv actually holds rms values (mislabelled) — rename or
-   multiply by sqrt(2); also affects the X_max statements in the report.
+2. ~~excursion_peak_mm in curves.csv actually holds rms values~~ **DONE (2026-10-04)**.
+   Proven from the generating calculation (drive is volts rms), fixed in
+   hornflow/domain/excursion.py (single source of truth), curves.csv v2 carries
+   excursion_rms_mm + excursion_peak_mm, report.read_csv() migrates v1 in memory,
+   state.json is 1.1 with a recorded migration, and the gate compares peak travel
+   against one-way peak Xmax. The X_max statement is corrected from "~59 V / ~952 W"
+   to "~41 V rms / ~476 W" (it was optimistic by sqrt(2) in voltage, 2x in power).
 3. Optional: Mic Field (Mesh File) + the "interface" tag -> colour map painted on the
    mouth plane; Edge Length 0.1 m there.
 4. Optional: --to-csv / --plot-field converters for REW / ParaView / matplotlib.
@@ -137,6 +142,21 @@ Key facts to know:
   the manual AKABAK section).
 
 # NEXT STEP
+0. **Phase 1 is done** on the branch `fix/excursion-rms-and-workflow-contract`
+   (2 commits, not yet pushed — the GitHub remote still has to be created).
+   Phase 1 fixed a real data error (rms vs peak excursion, in the unsafe
+   direction) and the W4 completion contract (`app/view.py` now emits
+   `completion`; the browser no longer computes it).
+   Remaining phases of the current programme, in order:
+   **2** redesign the Workflow tab as accessible accordions (the W4 screenshot is
+   still an unacceptable regression fixture — overlapping text, internal names as
+   labels, units twice, all groups expanded); **3** the M4 local host
+   (`python3 -m hornflow.app --run-dir runs/<id>`, `GET /api/view`, `POST
+   /api/brief|run|import|decision`, `/api/progress`); **4** the architecture
+   tournament (a real tapped-horn model validated against a reference before it
+   may win) and the three recommendation lanes; **5** two-candidate viewer
+   comparison; **6** fold risk (the chosen U-fold is flagged ~290° path skew at
+   200 Hz); **7** one real JBL run end to end from the UI.
 1. Read `docs/migration-notes.md`, then run the pipeline and read the report.
 2. **Open the local UI** (M1–M3, local-first, no Jira):
    `python3 run_pipeline.py params/horn_jbl_1200b.yaml --out runs` then
