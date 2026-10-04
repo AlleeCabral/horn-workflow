@@ -4,6 +4,10 @@ A horn design **workflow**, not a GUI: you edit one text file of numbers, run on
 command, and read a report that tells you what the horn will do, how big it will
 be, and which of several options is worth building.
 
+> **Contributing.** `main` is read-only: every change starts on a short-lived
+> branch (`feat/…`, `fix/…`, `docs/…`) and lands through a pull request. See
+> **[`CONTRIBUTING.md`](CONTRIBUTING.md)** — a `pre-commit` hook enforces it.
+
 You do **not** need to know loudspeaker engineering to use it. You do need to know
 two things about your situation: **how big a box you can live with** and **which
 frequency range you care about**. The tool derives the mouth, the depth, the throat
