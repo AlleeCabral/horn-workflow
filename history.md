@@ -397,7 +397,82 @@ the honest contract. A real pipeline run still produces a viewer with
 `view_schema 1.1` and the corrected excursion wording.
 
 
+## 2026-10-04 — Phase 2: the Workflow tab becomes nine progressive stages
+
+Branch `fix/excursion-rms-and-workflow-contract` (third commit). This is the UI
+redesign the brief asked for; the M3 screenshot was an unacceptable regression
+fixture and is now committed as *evidence* (see `docs/ui/`).
+
+### The model owns the stages
+
+* `hornflow/app/view.py` gained `WORKFLOW_STAGES` (the nine documented steps) and
+  `_workflow_stages()`, which emits per stage: `status`, `complete`,
+  `required_answered`/`required_total`, `blockers`, `locked`/`locked_by`/
+  `locked_reason`, the `gates` it owns, its `group_ids`, its `panels`, and
+  `open_by_default`. Plus `_brief_actions()` (Save draft / Freeze brief, each with
+  the reason it is disabled) and `current_stage` in the summary.
+* Every gate belongs to exactly one stage (coverage asserted against `STAGE_ORDER`),
+  so the old 16-row gate board dissolves into the stages and nothing is shown twice.
+* Two rules the tests forced out, both real:
+  1. **locked and complete must be mutually exclusive** - and so **evidence beats
+     the lock**: a stage whose own gates have already run is not "locked". Without
+     that, the four engineering stages read "locked" forever on a real run whose
+     brief questions were never entered.
+  2. A stage with **no questions of its own is pure pipeline work** and cannot be
+     complete before a run exists - otherwise it claimed "complete" because nothing
+     was measurable yet.
+* Lock graph: `safety_limits ← driver_provenance`;
+  `architecture_selection ← acoustic_target + envelope_manufacturing`;
+  `acoustic_design ← architecture_selection`; `verification_bem ← acoustic_design`;
+  `final_decision ← verification_bem`.
+* Honest numbers: a first run has **0/9** stages complete and **5** locked; the real
+  JBL run has **4/9** complete (the engineering stages) and the five question stages
+  needing input. `view_schema` 1.1 → 1.2.
+
+### The renderer
+
+* `ui/app.js` rewritten around a persistent summary band and nine accordions:
+  `<button class="acc-head" aria-expanded aria-controls>` + `<div class="acc-body"
+  role="region" aria-labelledby>`, `hidden` toggling, Up/Down/Home/End keyboard
+  navigation, and a visible `:focus-visible` ring.
+* Bodies are **built once and toggled**, so opening another stage cannot lose
+  content.
+* Field rows are label-once / value-once / provenance-below, with `Required` /
+  `Optional` instead of repeated `UNKNOWN` chips, the internal key only in a
+  `title`, and a left rule on the fields that need input.
+* `ui/app.css`: single-column below 900 px and at most two columns above;
+  `overflow-x: hidden` + `min-width: 0` on flex children so nothing can clip;
+  `pre.cmd` wraps; the shared strip wraps and drops separators/`assumptions` below
+  700 px (it was clipping at 375 px before).
+
+### Evidence
+
+* `tools/shoot_ui.sh <run_dir>` renders the UI at 375/768/1280/1440/1920 px with
+  `google-chrome --headless=new --screenshot` - **no browser-automation
+  dependency**. `docs/ui/` holds the before/after pair at 375 and 1440 px, the
+  before being generated from a scratch git worktree at `bdfb7a5` so the comparison
+  is genuinely like-for-like. The before shot reproduces every listed defect:
+  clipped strip, four stacked bands, *"wave A complete"* with blank values,
+  `operating_orientationUNKNOWN` collisions.
+* The same browser tool backs the DOM tests: `chrome --dump-dom` after a 4 s
+  virtual-time budget gives a **really rendered document**, asserted for nine
+  accordions, exactly one open, the open one being the stage the model named, human
+  labels present, internal keys absent from rendered text, and "Read-only snapshot"
+  labelled in static mode.
+
+### Tests
+
+legacy **147/147**; pytest **159 → 185 passed** (new `tests/test_workflow_ui.py`,
+26 tests: the model contract, the renderer's static contract, and six browser DOM
+tests that skip cleanly where no browser exists).
+
+### Not in this phase
+
+The local host (M4) is still to come, so every state-changing button remains
+disabled with a reason and a `Copy command`; the Results tab is still a placeholder.
+
 # CURRENT STATE
+
 **Model (GUI, `~/AI projects/horn design/Saved/`):**
 
 | item | value |

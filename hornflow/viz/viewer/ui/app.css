@@ -9,7 +9,7 @@ body {
 
 /* ---- tab strip ---------------------------------------------------------- */
 #tabs {
-  flex: 0 0 auto; display: flex; align-items: center; gap: 4px;
+  flex: 0 0 auto; display: flex; align-items: center; gap: 4px; flex-wrap: wrap;
   padding: 6px 10px; background: #1c1f25; border-bottom: 1px solid #2a2f38;
 }
 #tabs .tab {
@@ -20,9 +20,15 @@ body {
 #tabs .tab:hover { background: #23272f; color: #e8e8ea; }
 #tabs .tab.active { background: #2a2f38; color: #e8e8ea; border-color: #3a4150; }
 #strip { margin-left: auto; display: flex; align-items: center; gap: 10px;
-         color: #9aa3b2; font-size: 12px; flex-wrap: wrap; }
+         color: #9aa3b2; font-size: 12px; flex-wrap: wrap; min-width: 0; }
+#strip > span { overflow-wrap: anywhere; min-width: 0; }
 #strip .sep { color: #3a4150; }
 #strip .next { color: #e8e8ea; }
+@media (max-width: 700px) {
+  /* the strip must never clip: drop the separators and the least critical item */
+  #strip { font-size: 11px; gap: 6px; }
+  #strip .sep, #strip .opt { display: none; }
+}
 
 /* ---- panes: hidden panes keep their layout so the viewer canvas never
    collapses to zero size (visibility, not display:none) ------------------- */
@@ -42,7 +48,8 @@ body {
 #dims .dim-label b { color: #9fd0ff; font-weight: 600; }
 
 /* ---- workflow tab ------------------------------------------------------ */
-#pane-workflow { padding: 14px 16px 40px; }
+#pane-workflow { padding: 14px 16px 40px; overflow-x: hidden; }
+#pane-workflow * { max-width: 100%; box-sizing: border-box; }
 .wf-band { border: 1px solid #2a2f38; border-radius: 6px; margin: 0 0 12px;
            background: #191c22; }
 .wf-band > header {
@@ -62,12 +69,70 @@ body {
 .chip.optional, .chip.locked { color: #9aa3b2; }
 .chip.rejected { color: #fcd34d; border-color: #6b5a2f; }
 .chip.validated { color: #86efac; border-color: #2f6b45; }
+.chip.attention { color: #fcd34d; border-color: #6b5a2f; }
 .kv { display: grid; grid-template-columns: 190px 1fr; gap: 3px 10px; }
 .kv dt { color: #9aa3b2; }
-.kv dd { margin: 0; }
-.gates { display: grid; grid-template-columns: repeat(auto-fill, minmax(240px, 1fr));
+.kv dd { margin: 0; overflow-wrap: anywhere; }
+
+/* ---- summary: the persistent header of the Workflow tab ---------------- */
+.kv-summary { grid-template-columns: 150px minmax(0, 1fr); margin-bottom: 10px; }
+.primary-action {
+  border-left: 3px solid #3f6f9b; background: #1b2530;
+  border-radius: 0 5px 5px 0; padding: 8px 10px; margin: 0 0 10px;
+}
+.primary-action .pa-label { font-weight: 600; font-size: 14px; }
+.primary-action .pa-why { color: #c8cdd6; margin-top: 2px; }
+.primary-action .pa-owner { font-size: 11px; margin-top: 2px; }
+.primary-action .pa-row { margin-top: 7px; }
+.brief-actions { display: grid; gap: 6px; }
+.brief-actions .ba { display: grid; gap: 2px; }
+.brief-actions .ba-why { font-size: 11px; }
+
+/* ---- stages: accessible accordions ------------------------------------- */
+#pane-workflow .stages { display: grid; gap: 6px; }
+.acc { border: 1px solid #2a2f38; border-radius: 6px; background: #191c22;
+       overflow: hidden; }
+.acc-head {
+  display: flex; align-items: center; gap: 8px; width: 100%;
+  padding: 9px 12px; margin: 0; text-align: left; cursor: pointer;
+  background: #1c1f25; color: inherit; border: 0; border-radius: 0;
+  font: inherit; min-width: 0; flex-wrap: wrap;
+}
+.acc-head:hover { background: #23272f; }
+.acc-head:focus-visible { outline: 2px solid #6cb6ff; outline-offset: -2px; }
+.acc-head .acc-icon { color: #9aa3b2; width: 12px; flex: 0 0 auto; }
+.acc-head .acc-name { font-weight: 600; min-width: 0; overflow-wrap: anywhere; }
+.acc-head .acc-count { font-size: 11px; margin-left: auto; white-space: nowrap; }
+.acc-head .chip { flex: 0 0 auto; }
+.acc-body { padding: 10px 12px; border-top: 1px solid #2a2f38; }
+.acc-acc-locked .acc-head { background: #1a1c20; color: #9aa3b2; }
+.acc-needs_input, .acc-in_progress { border-color: #3a4150; }
+.acc-needs_input .acc-head { background: #21232a; }
+.acc-blocked { border-color: #6b2f2f; }
+.acc-complete .acc-head { background: #1a221d; }
+.locked-why { border-left: 3px solid #3a4150; padding: 4px 0 4px 9px;
+              margin: 0 0 9px; color: #c8cdd6; }
+.locked-why.failed { border-left-color: #6b2f2f; color: #fca5a5; }
+.gates-wrap { margin-top: 10px; }
+.gates-wrap .sub { font-size: 11px; margin-bottom: 4px; }
+.qhead { display: flex; align-items: baseline; gap: 8px; flex-wrap: wrap; }
+.stamp, .ro-note { margin-top: 12px; font-size: 11px; }
+.gates { display: grid; grid-template-columns: repeat(auto-fit, minmax(230px, 1fr));
          gap: 4px 14px; }
-.gate { display: flex; align-items: center; gap: 6px; }
+.gate { display: flex; align-items: center; gap: 6px; min-width: 0; }
+.gate .nm { min-width: 0; overflow-wrap: anywhere; }
+.gate .st { font-size: 11px; margin-left: auto; white-space: nowrap; }
+
+/* ---- responsive: one column narrow, at most two wide ------------------- */
+@media (max-width: 700px) {
+  #pane-workflow { padding: 10px 10px 28px; }
+  .kv, .kv-summary { grid-template-columns: 1fr; gap: 0 0; }
+  .kv dt { margin-top: 5px; }
+  .kv dd { margin-bottom: 2px; }
+  .acc-head .acc-count { margin-left: 0; flex-basis: 100%; }
+  .gates { grid-template-columns: 1fr; }
+}
+
 .gate .nm { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .gate .dur { margin-left: auto; color: #6b7280; font-size: 11px; }
 .na { padding: 10px 12px; border-radius: 5px; background: #23272f;
@@ -79,8 +144,11 @@ body {
      margin: 0 0 8px; }
 .q .pr { font-weight: 600; }
 .q .why { color: #9aa3b2; margin: 3px 0 6px; }
-.fields { display: grid; grid-template-columns: repeat(auto-fit, minmax(240px, 1fr));
+.fields { display: grid; grid-template-columns: minmax(0, 1fr);
           gap: 6px 18px; margin-top: 2px; }
+@media (min-width: 900px) {
+  .fields { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+}
 /* One field = label + value on one line, provenance beneath.  The value never
    wraps under the label, so nothing can overlap at any viewport width. */
 .field { display: block; min-width: 0; padding: 3px 0; }
@@ -104,11 +172,14 @@ table.tbl th, table.tbl td { text-align: left; padding: 4px 8px;
                              border-bottom: 1px solid #2a2f38; }
 table.tbl th { color: #9aa3b2; font-weight: 500; }
 code, pre { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; }
+/* the copy command must wrap, not force a horizontal scrollbar at 375 px */
 pre.cmd { background: #101216; border: 1px solid #2a2f38; border-radius: 4px;
-          padding: 8px 10px; overflow-x: auto; margin: 6px 0 0; }
+          padding: 8px 10px; margin: 6px 0 0;
+          white-space: pre-wrap; overflow-wrap: anywhere; }
 .btn { padding: 4px 10px; background: #2a2f38; color: #e8e8ea;
        border: 1px solid #3a4150; border-radius: 4px; cursor: pointer; font: inherit; }
-.btn[disabled] { opacity: .5; cursor: default; }
+.btn:focus-visible { outline: 2px solid #6cb6ff; outline-offset: 1px; }
+.btn[disabled] { opacity: .45; cursor: not-allowed; border-style: dashed; }
 .btn.primary { background: #2f4f6b; border-color: #3f6f9b; }
 .muted { color: #6b7280; }
 details.tb summary { cursor: pointer; color: #9aa3b2; }

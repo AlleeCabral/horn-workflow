@@ -142,21 +142,22 @@ Key facts to know:
   the manual AKABAK section).
 
 # NEXT STEP
-0. **Phase 1 is done** on the branch `fix/excursion-rms-and-workflow-contract`
-   (2 commits, not yet pushed — the GitHub remote still has to be created).
-   Phase 1 fixed a real data error (rms vs peak excursion, in the unsafe
-   direction) and the W4 completion contract (`app/view.py` now emits
-   `completion`; the browser no longer computes it).
+0. **Phases 1 and 2 are done** on the branch
+   `fix/excursion-rms-and-workflow-contract` (3 commits, not yet pushed — the
+   GitHub remote still has to be created).
+   * Phase 1 fixed a real data error (rms vs peak excursion, in the unsafe
+     direction) and the W4 completion contract.
+   * Phase 2 made the Workflow tab nine progressive accordion stages driven by
+     `app/view.py`; before/after screenshots are in `docs/ui/`, regenerable with
+     `tools/shoot_ui.sh <run_dir>`.
    Remaining phases of the current programme, in order:
-   **2** redesign the Workflow tab as accessible accordions (the W4 screenshot is
-   still an unacceptable regression fixture — overlapping text, internal names as
-   labels, units twice, all groups expanded); **3** the M4 local host
-   (`python3 -m hornflow.app --run-dir runs/<id>`, `GET /api/view`, `POST
-   /api/brief|run|import|decision`, `/api/progress`); **4** the architecture
-   tournament (a real tapped-horn model validated against a reference before it
-   may win) and the three recommendation lanes; **5** two-candidate viewer
-   comparison; **6** fold risk (the chosen U-fold is flagged ~290° path skew at
-   200 Hz); **7** one real JBL run end to end from the UI.
+   **3** the M4 local host (`python3 -m hornflow.app --run-dir runs/<id>`,
+   `GET /api/view`, `POST /api/brief|run|import|decision`, `/api/progress`) — this
+   is what makes the disabled buttons real and is the stated goal ("one real run
+   end to end"); **4** the architecture tournament (a real tapped-horn model
+   validated against a reference before it may win) and the three recommendation
+   lanes; **5** two-candidate viewer comparison; **6** fold risk (the chosen U-fold
+   is flagged ~290° path skew at 200 Hz); **7** one real JBL run end to end.
 1. Read `docs/migration-notes.md`, then run the pipeline and read the report.
 2. **Open the local UI** (M1–M3, local-first, no Jira):
    `python3 run_pipeline.py params/horn_jbl_1200b.yaml --out runs` then

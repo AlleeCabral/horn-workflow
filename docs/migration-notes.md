@@ -213,6 +213,21 @@ recorded in the new `state.migrations` list, so it is explicit and inspectable
 rather than silent. `hornflow/domain/state.py` refuses any version with no
 registered path forward.
 
+### view_schema 1.1 -> 1.2 (the Workflow stages)
+
+1.2 adds to `app_view.json`: `completion` (per-field `accepted`, per-group and
+per-wave completion, a flat `blockers` list, `next_required_field`),
+`workflow_stages` (the nine progressive stages with status, counts, lock reason and
+`open_by_default`), `brief_actions`, and `current_stage` inside `current_state`.
+Field records in 1.2 carry `key`/`label`/`help`/`required`/`accepted`/`source`
+(1.1 had `name`, no labels and no acceptance flag).
+
+The view model is a *derived* artifact - it is regenerated from `state.json`, so
+there is nothing to migrate and no risk of reinterpreting a stored number. A run
+whose `viewer.html` predates 1.2 simply renders the nine-stage tab as a labelled
+"this page has no workflow stages" message with the re-render command; regenerate
+it with `--emit-ui` and it picks up the new schema.
+
 ### Deliberate baseline regeneration (once)
 
 `tests/fixtures/baseline/{manifest.json,jbl_1200b_curves.csv}` were regenerated for

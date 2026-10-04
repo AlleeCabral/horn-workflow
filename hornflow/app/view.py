@@ -26,7 +26,7 @@ from ..io.artifacts import atomic_write, sha256_file
 from ..workflow.stages import (OPTIONAL_STAGES, STAGE_ORDER, Stage,
                                prerequisites)
 
-VIEW_SCHEMA = "1.1"
+VIEW_SCHEMA = "1.2"
 
 # The eight manual-solve states, in order (the authoritative definition lives in
 # hornflow.physics.solvers.manual; repeated here only as a display order).
@@ -182,6 +182,169 @@ FIELD_HELP = {
     "max_external_volume_m3": "Optional - derived from width x height x depth "
                               "when left blank.",
 }
+# ---------------------------------------------------------------------------
+#  the nine progressive stages (docs/app-local-multitab.md §4)
+# ---------------------------------------------------------------------------
+# Each stage owns the question groups it collects and the pipeline gates it
+# reports, and declares what must be complete before it unlocks.  The UI renders
+# this list; it never invents a stage, an order, or a lock.
+# A stage with no owned gates is complete on its answers alone (true for the five
+# question stages on a first run, where every gate is still pending).
+WORKFLOW_STAGES = (
+    {"id": "project_deployment", "name": "Project and deployment",
+     "purpose": "What the system is for and the boundary it will load into.",
+     "groups": ("Q-PRJ-01",), "gates": (), "requires": ()},
+    {"id": "driver_provenance", "name": "Driver and provenance",
+     "purpose": "Which driver, and how trustworthy its numbers are.",
+     "groups": ("Q-DRV-01/02",), "gates": (), "requires": ()},
+    {"id": "safety_limits", "name": "Safety and electrical limits",
+     "purpose": "The excursion, thermal and impedance limits that bound output.",
+     "groups": ("Q-DRV-04/05+Q-ELE-02",), "gates": ("INPUT_AUDIT",),
+     "requires": ("driver_provenance",)},
+    {"id": "acoustic_target", "name": "Acoustic target",
+     "purpose": "Band, level and distance - what the system must actually deliver.",
+     "groups": ("Q-TGT-01/02",),
+     "gates": ("LIMIT_IMPACT_ANALYSIS", "PHYSICAL_FEASIBILITY"), "requires": ()},
+    {"id": "envelope_manufacturing", "name": "Envelope and manufacturing",
+     "purpose": "The size and mass gates, and how it will be built.",
+     "groups": ("Q-PHY-01/02+Q-MFG-01",), "gates": (), "requires": ()},
+    {"id": "architecture_selection", "name": "Architecture selection",
+     "purpose": "Which acoustic family wins, on scored evidence.",
+     "groups": (), "gates": ("ARCHITECTURE_SCREENING",),
+     "requires": ("acoustic_target", "envelope_manufacturing")},
+    {"id": "acoustic_design", "name": "Acoustic and folded design",
+     "purpose": "The unfolded reference, the fold, and its area-law check.",
+     "groups": (),
+     "gates": ("IDEAL_ACOUSTIC_OPTIMIZATION", "FOLD_TOPOLOGY_GENERATION",
+               "FOLD_GEOMETRY_VALIDATION", "ONE_DIMENSIONAL_SIMULATION"),
+     "requires": ("architecture_selection",)},
+    {"id": "verification_bem", "name": "Verification and AKABAK",
+     "purpose": "The manual 3-D solve, its import and the validation outcome.",
+     "groups": (),
+     "gates": ("FOLD_AWARE_SIMULATION", "THREE_DIMENSIONAL_VERIFICATION"),
+     "panels": ("manual_bem", "import", "outcome"),
+     "requires": ("acoustic_design",)},
+    {"id": "final_decision", "name": "Final decision",
+     "purpose": "Structure, manufacture, sensitivity, and the recorded decision.",
+     "groups": (),
+     "gates": ("STRUCTURAL_SCREENING", "MANUFACTURING_TRANSFORMATION",
+               "CONSTRAINT_SENSITIVITY", "INDEPENDENT_CRITIQUE",
+               "FINAL_COMPARISON", "REPORT_AND_EXPORT"),
+     "panels": ("rerun",),
+     "requires": ("verification_bem",)},
+)
+
+# A gate in one of these states is not holding its stage back; "skipped" is how
+# the pipeline records an optional stage it deliberately did not run.
+GATE_OK_STATES = ("passed", "skipped")
+
+
+def _workflow_stages(questions: list, gates: list, *, run_exists: bool) -> list:
+    """Derive the nine stage rows: status, answer counts, lock reason, default open.
+
+    A stage is complete when none of its required answers is outstanding and every
+    gate it owns is done.  On a first run the gates are all still pending by
+    definition, so only the answers can hold a stage back - otherwise the brief
+    could never be frozen.
+    """
+    qmap = {q["id"]: q for q in questions}
+    gmap = {g["stage"]: g for g in gates}
+    status_by_id: dict = {}
+    rows = []
+    for spec in WORKFLOW_STAGES:
+        groups = [qmap[g] for g in spec["groups"] if g in qmap]
+        owned = [gmap[g] for g in spec["gates"] if g in gmap]
+
+        req_total = sum(g["required_total"] for g in groups)
+        req_done = sum(g["required_answered"] for g in groups)
+        blockers = [{"group": g["id"], "field": f}
+                    for g in groups for f in (g["blocked_by"] or [])]
+        failed = [g["stage"] for g in owned if g["status"] in ("failed", "blocked")]
+        not_done = ([] if not run_exists else
+                    [g["stage"] for g in owned if g["status"] not in GATE_OK_STATES])
+
+        missing = [s for s in spec["requires"] if status_by_id.get(s) != "complete"]
+        # Answer-driven stages complete on their answers; gates are then
+        # informational, so a pending pipeline stage cannot hold the brief back.
+        # A stage with no questions of its own is pure pipeline work, and cannot
+        # be complete before a run exists - otherwise it would claim "complete"
+        # simply because nothing was measurable yet.
+        has_questions = bool(groups)
+        if has_questions:
+            gates_ok = not (failed or not_done)
+        else:
+            gates_ok = bool(owned) and all(
+                g["status"] in GATE_OK_STATES for g in owned)
+
+        # Evidence beats the lock: a stage whose own gates have already run is not
+        # "locked" - the work visibly happened.  Without this, the four
+        # engineering stages would read "locked" forever on a real run whose brief
+        # questions were never entered, even though their gates had all passed.
+        gates_done = bool(owned) and run_exists and all(
+            g["status"] in GATE_OK_STATES for g in owned)
+        locked = bool(missing) and not gates_done
+
+        answered_ok = not blockers
+        complete = answered_ok and gates_ok and not locked
+
+        if locked:
+            status = "locked"
+        elif failed:
+            status = "blocked"
+        elif not answered_ok:
+            status = "needs_input"
+        elif not complete:
+            status = "in_progress"
+        else:
+            status = "complete"
+        status_by_id[spec["id"]] = status
+
+        rows.append({
+            "id": spec["id"], "order": len(rows), "name": spec["name"],
+            "purpose": spec["purpose"], "status": status, "complete": complete,
+            "required_total": req_total, "required_answered": req_done,
+            "blocker_count": len(blockers), "blockers": blockers,
+            "group_ids": [g["id"] for g in groups],
+            "locked": locked,
+            "locked_by": (missing if locked else []),
+            "locked_reason": (("Finish " + ", ".join(missing) + " first.")
+                              if locked else None),
+            "blocked_by_evidence": (missing if (missing and not locked) else []),
+            "gates": [{"stage": g["stage"], "status": g["status"],
+                       "optional": g["optional"], "detail": g["detail"]}
+                      for g in owned],
+            "gate_failed": failed,
+            "panels": list(spec.get("panels") or ()),
+        })
+
+    # the first stage that still needs work and is not locked - opened by default
+    current = next((r["id"] for r in rows
+                    if not r["complete"] and not r["locked"]), None)
+    for r in rows:
+        r["open_by_default"] = (r["id"] == current)
+    return rows
+
+
+def _brief_actions(completion: dict) -> dict:
+    """Save draft / Freeze brief, each with the reason it is enabled or not."""
+    can_freeze = bool(completion.get("complete"))
+    blockers = completion.get("blocker_count") or 0
+    return {
+        "save_draft": {
+            "label": "Save draft", "enabled": False,
+            "reason": "No editable values in this milestone - the brief editor "
+                      "arrives with the local host (M4).",
+        },
+        "freeze_brief": {
+            "label": "Freeze brief", "enabled": can_freeze,
+            "reason": ("Every required answer is present; freezing records the "
+                       "revision and its input hash." if can_freeze else
+                       f"{blockers} required answer"
+                       f"{'' if blockers == 1 else 's'} still missing."),
+        },
+    }
+
+
 
 
 
@@ -531,7 +694,8 @@ def _decided(state: dict) -> bool:
 
 
 def _current_state(state: dict, bem_state: str, gates: list, questions: list,
-                   completion: dict | None = None) -> dict:
+                   completion: dict | None = None,
+                   stages: list | None = None) -> dict:
     run = state.get("run") or {}
     validation = state.get("validation") or {}
     bem = validation.get("bem_manual") or {}
@@ -540,6 +704,7 @@ def _current_state(state: dict, bem_state: str, gates: list, questions: list,
     assumptions = sum(1 for q in questions for f in q["fields"]
                       if f["provenance"] in ("DEFAULT", "ESTIMATED"))
     comp = completion or {}
+    current = next((r for r in (stages or []) if r.get("open_by_default")), None)
     return {
         "brief_revision": (validation.get("brief") or {}).get("revision"),
         "input_hash": (validation.get("brief") or {}).get("input_hash"),
@@ -561,6 +726,13 @@ def _current_state(state: dict, bem_state: str, gates: list, questions: list,
         "required_fields_answered": comp.get("required_fields_answered"),
         "blocker_count": comp.get("blocker_count"),
         "wave_a_complete": comp.get("wave_a_complete"),
+        # the stage the UI opens by default, and the single next action's owner
+        "current_stage": (None if current is None else
+                          {"id": current["id"], "name": current["name"],
+                           "status": current["status"],
+                           "order": current["order"]}),
+        "stages_complete": sum(1 for r in (stages or []) if r.get("complete")),
+        "stages_total_workflow": len(stages or []),
     }
 
 
@@ -721,6 +893,8 @@ def build_view(state, *, run_dir=None, brief=None, now=None, export_dir=None,
     brief_in = brief if brief is not None else (s.get("requirements") or {})
     questions = _questions(s, first_run, brief_in)
     completion = _completion(questions, run_exists=not first_run)
+    stages = _workflow_stages(questions, gates, run_exists=not first_run)
+    brief_actions = _brief_actions(completion)
     exp_dir = export_dir
     if exp_dir is None and run_dir is not None:
         exp_dir = Path(run_dir) / "deliverables" / "bem" / "export"
@@ -748,12 +922,15 @@ def build_view(state, *, run_dir=None, brief=None, now=None, export_dir=None,
             "input_hash": (validation.get("brief") or {}).get("input_hash"),
             "runs_available": list(runs),
         },
-        "current_state": _current_state(s, bem_state, gates, questions, completion),
+        "current_state": _current_state(s, bem_state, gates, questions, completion,
+                                        stages),
         "next_action": _next_action(mode, gates, questions, bem_state, outcome,
                                     import_panel),
         "gates": gates,
         "questions": questions,
         "completion": completion,
+        "workflow_stages": stages,
+        "brief_actions": brief_actions,
         "manual_bem": manual,
         "import_panel": import_panel,
         "outcome": outcome,

@@ -149,4 +149,40 @@ header and the added peak column changed. `docs/migration-notes.md` records it.
 **Validation.** `tests/test_excursion_convention.py` (27 tests) proves the rms
 convention from the generating calculation, asserts `peak = √2·rms`, checks the v1
 migration, and includes a gate test where a driver whose rms travel fits but whose
+
+---
+
+## ADR-0013 — the Workflow tab is nine progressive stages, not a wall of bands
+
+**Problem.** The M3 Workflow tab rendered eight bands stacked vertically, all
+expanded. On a 375 px viewport the required-questions band alone pushed everything
+else off-screen, the shared strip clipped, field rows collided
+(`operating_orientationUNKNOWN`), internal keys were the primary labels, and groups
+were judged "blocking" only on a first run - so W4 read *"wave A complete"* while
+five required values were blank. `docs/ui/workflow-before-375px.png` is the
+evidence.
+
+**Alternatives.** (a) Tighten the spacing of the existing bands - it would still be
+one unbounded scroll and the same wrong arithmetic. (b) One stage per page - more
+navigation for a nine-step process. (c) Nine accessible accordions under a
+persistent summary, with the current stage open by default.
+
+**Decision.** (c). The model (`app/view.py`) owns `workflow_stages`: order, status,
+per-stage answer counts, blockers, lock reasons and `open_by_default`. A stage is
+`complete` only when its required answers are in and its owned gates are done; a
+stage that collects no answers is *pure pipeline work* and cannot complete before a
+run exists. Locks cascade through a declared `requires` graph, but **evidence beats
+the lock**: a stage whose own gates have already run is never reported "locked" and
+never both "locked" and "complete". The renderer builds each body once and toggles
+`hidden`, so contents survive opening another stage.
+
+**Consequences.** The gate board is no longer a separate block - each stage shows
+its own gates, so nothing is displayed twice and nothing is hidden. Locked stages
+stay visible (collapsed, with the reason) rather than disappearing.
+
+**Validation.** `tests/test_workflow_ui.py`: the model contract (order, coverage,
+locks, counts, one open stage), a static renderer contract, and six DOM tests
+against a real browser-rendered document via `chrome --dump-dom`. Screenshots at
+five widths in `docs/ui/`.
+
 peak travel does not **must** fail.

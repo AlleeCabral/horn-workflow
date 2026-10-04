@@ -158,101 +158,115 @@
       h('span', { class: 'next',
                   text: 'next: ' + ((view.next_action && view.next_action.label) || '\u2014') }),
       h('span', { class: 'sep', text: '\u00b7' }),
-      h('span', { text: 'assumptions: ' + (cs.assumptions || 0) })
+      h('span', { class: 'opt', text: 'assumptions: ' + (cs.assumptions || 0) })
     ].forEach(function (b) { strip.appendChild(b); });
   }
 
 
-  // ---------------------------------------------------------------- W1
-  function bandCurrentState() {
+  // ---------------------------------------------------------------- summary
+  // The persistent top summary.  Everything here is read from current_state,
+  // next_action, completion and brief_actions - the browser adds nothing.
+  function gateMark(g) {
+    return g.status === 'passed' ? '\u2713'
+      : g.status === 'skipped' ? '\u2013'
+      : (g.status === 'failed' || g.status === 'blocked') ? '\u2717'
+      : g.status === 'running' ? '\u22ef' : '\u25cb';
+  }
+
+  function gateCls(g) {
+    return g.status === 'passed' ? 'passed'
+      : (g.status === 'failed' || g.status === 'blocked') ? 'failed'
+      : g.status === 'skipped' ? 'optional' : '';
+  }
+
+  function gateRow(g) {
+    var item = h('div', { class: 'gate' }, [
+      h('span', { class: 'chip ' + gateCls(g), text: gateMark(g),
+                  'aria-hidden': 'true' }),
+      h('span', { class: 'nm', text: g.stage + (g.optional ? ' (optional)' : '') }),
+      h('span', { class: 'st muted', text: g.status })
+    ]);
+    var tip = [g.detail, (g.blocked_by && g.blocked_by.length)
+      ? 'blocked by: ' + g.blocked_by.join(', ') : ''].filter(Boolean).join(' | ');
+    if (tip) { item.title = tip; }
+    return item;
+  }
+
+  function summaryBand() {
     var cs = view.current_state || {};
-    var b = band('W1 \u00b7 current state',
-                 { text: view.mode, cls: bemChipClass(cs.bem_state || view.mode) });
-    var kv = h('dl', { class: 'kv' });
+    var na = view.next_action || {};
+    var comp = view.completion || {};
+    var act = view.brief_actions || {};
+    var b = band('Current state',
+                 { text: cs.bem_state || view.mode,
+                   cls: bemChipClass(cs.bem_state || view.mode) });
+
+    var kv = h('dl', { class: 'kv kv-summary' });
     function row(k, v) {
       kv.appendChild(h('dt', { text: k }));
       kv.appendChild(h('dd', {}, [String(v)]));
     }
+    row('project', (view.project && view.project.name) || '(unnamed)');
     row('run', (view.run && view.run.run_id) || 'no run yet');
-    row('definition', (view.run && view.run.input_path) || '\u2014');
+    row('current stage', cs.current_stage
+      ? (cs.current_stage.order + 1) + ' of ' + cs.stages_total_workflow
+        + ' \u00b7 ' + cs.current_stage.name
+      : '\u2014 all stages complete');
     row('brief revision', fmt(cs.brief_revision, 0));
-    row('input hash', cs.input_hash ? String(cs.input_hash).slice(0, 24) + '\u2026' : '\u2014');
-    row('stages', (cs.stages_passed || 0) + ' / ' + (cs.stages_total || 0) + ' passed');
-    row('failed / blocked', (cs.stages_failed && cs.stages_failed.length)
-        ? cs.stages_failed.join(', ') : 'none');
+    row('input hash', cs.input_hash
+      ? String(cs.input_hash).slice(0, 24) + '\u2026' : '\u2014');
+    row('required answers', (comp.required_fields_answered || 0) + ' of '
+        + (comp.required_fields_total || 0)
+        + '  (' + (comp.blocker_count || 0) + ' blocking)');
+    row('validation warnings', String(cs.warnings || 0));
     row('BEM state', (cs.bem_state || '\u2014')
         + (cs.bem_status ? ' (' + cs.bem_status + ')' : ''));
-    row('solver', cs.solver_label || '\u2014');
-    row('assumptions', String(cs.assumptions || 0));
-    row('validation warnings', String(cs.warnings || 0));
     b.body.appendChild(kv);
-    return b.root;
-  }
 
-  // ---------------------------------------------------------------- W2
-  function bandNextAction() {
-    var na = view.next_action || {};
-    var b = band('W2 \u00b7 next action', na.owner ? { text: 'owner: ' + na.owner } : null);
-    b.body.appendChild(h('div', { class: 'na' }, [
-      h('div', { class: 'lbl', text: na.label || 'nothing to do' }),
-      h('div', { class: 'why', text: na.why || '' }),
-      h('div', { class: 'owner', text: 'owner: ' + (na.owner || '\u2014') })
-    ]));
-    var cta = (na.cta || {});
+    // exactly one primary action, visually obvious
+    var primary = h('div', { class: 'primary-action' });
+    primary.appendChild(h('div', { class: 'pa-label', text: na.label || 'nothing to do' }));
+    if (na.why) { primary.appendChild(h('div', { class: 'pa-why', text: na.why })); }
+    primary.appendChild(h('div', { class: 'pa-owner muted',
+                                   text: 'owner: ' + (na.owner || '\u2014') }));
+    var cta = na.cta || {};
     if (cta.kind === 'copy_command' && cta.value) {
-      b.body.appendChild(h('div', {}, [copyBtn('Copy command', cta.value)]));
-      b.body.appendChild(h('pre', { class: 'cmd', text: cta.value }));
+      primary.appendChild(h('div', { class: 'pa-row' }, [copyBtn('Copy command', cta.value)]));
+      primary.appendChild(h('pre', { class: 'cmd', text: cta.value }));
     } else if (cta.kind === 'open_url' && cta.value) {
-      b.body.appendChild(h('div', {}, [h('a', { class: 'btn', href: cta.value,
-                                                target: '_blank' }, ['Open'])]));
+      primary.appendChild(h('div', { class: 'pa-row' }, [
+        h('a', { class: 'btn', href: cta.value, target: '_blank', rel: 'noopener' }, ['Open'])
+      ]));
     } else {
-      b.body.appendChild(h('div', {}, [todoBtn(
+      primary.appendChild(h('div', { class: 'pa-row' }, [todoBtn(
         na.label || 'action',
         'This action mutates state; it arrives with the local host (M4).')]));
     }
     if (na.blockers && na.blockers.length) {
-      b.body.appendChild(h('div', { class: 'muted',
-                                    text: 'blocked by: ' + na.blockers.join(', ') }));
+      primary.appendChild(h('div', { class: 'muted',
+        text: 'blocked by: ' + na.blockers.join(', ') }));
     }
-    // reserved area (decision: run progress will be polled from logs.jsonl)
+    b.body.appendChild(primary);
+
+    // the two brief actions, each explaining itself when disabled
+    var acts = h('div', { class: 'brief-actions' });
+    ['save_draft', 'freeze_brief'].forEach(function (k) {
+      var a = act[k] || {};
+      var attrs = { class: 'btn' + (a.enabled ? ' primary' : ''), type: 'button',
+                    title: a.reason || '', text: a.label || k };
+      if (!a.enabled) { attrs.disabled = 'disabled'; }
+      acts.appendChild(h('div', { class: 'ba' }, [
+        h('button', attrs),
+        h('div', { class: 'ba-why muted',
+                   text: (a.enabled ? 'Enabled \u2014 ' : 'Disabled \u2014 ')
+                         + (a.reason || '') })
+      ]));
+    });
+    b.body.appendChild(acts);
+    // reserved area (decision: run progress is polled from logs.jsonl in M4)
     b.body.appendChild(h('div', { class: 'placeholder', style: 'margin-top:10px',
       text: 'Run progress \u2014 reserved. M4 will stream logs.jsonl here while a run '
             + 'is in flight.' }));
-    return b.root;
-  }
-
-
-  // ---------------------------------------------------------------- W3
-  function bandGates() {
-    var gates = view.gates || [];
-    var failed = gates.filter(function (g) {
-      return g.status === 'failed' || g.status === 'blocked';
-    }).length;
-    var b = band('W3 \u00b7 gates', failed
-      ? { text: failed + ' not passing', cls: 'failed' }
-      : { text: gates.length + ' stages', cls: 'passed' });
-    var grid = h('div', { class: 'gates' });
-    gates.forEach(function (g) {
-      var mark = g.status === 'passed' ? '\u2713'
-        : g.status === 'skipped' ? '\u2013'
-        : (g.status === 'failed' || g.status === 'blocked') ? '\u2717'
-        : g.status === 'running' ? '\u22ef' : '\u25cb';
-      var cls = g.status === 'passed' ? 'passed'
-        : (g.status === 'failed' || g.status === 'blocked') ? 'failed'
-        : g.status === 'skipped' ? 'optional' : '';
-      var kids = [h('span', { class: 'chip ' + cls, text: mark }),
-                  h('span', { class: 'nm',
-                              text: g.stage + (g.optional ? ' (optional)' : '') })];
-      if (g.duration_s !== null && g.duration_s !== undefined) {
-        kids.push(h('span', { class: 'dur', text: Number(g.duration_s).toFixed(2) + ' s' }));
-      }
-      var item = h('div', { class: 'gate' }, kids);
-      var tip = [g.detail, (g.blocked_by && g.blocked_by.length)
-        ? 'blocked by: ' + g.blocked_by.join(', ') : ''].filter(Boolean).join(' | ');
-      if (tip) item.title = tip;
-      grid.appendChild(item);
-    });
-    b.body.appendChild(grid);
     return b.root;
   }
 
@@ -282,54 +296,139 @@
     return wrap;
   }
 
-  // ---------------------------------------------------------------- W4
-  function bandQuestions() {
-    var qs = view.questions || [];
-    var comp = view.completion || {};
-    var blockers = comp.blocker_count || 0;
-    var b = band('W4 \u00b7 required questions', blockers
-      ? { text: blockers + ' blocking', cls: 'failed' }
-      : { text: 'all required answered', cls: 'passed' });
-
-    if (comp.required_fields_total) {
-      b.body.appendChild(h('div', { class: 'muted' }, [
-        h('strong', { text: (comp.required_fields_answered || 0) + ' of '
-                           + comp.required_fields_total + ' required answers' }),
-        h('span', { text: '  \u00b7  wave A is '
-                           + (comp.wave_a_complete ? 'complete' : 'incomplete') })
-      ]));
-    }
-    if (comp.next_required_field) {
-      var nx = comp.next_required_field;
-      b.body.appendChild(h('div', { class: 'nextq' }, [
-        h('span', { class: 'muted', text: 'Next required: ' }),
-        h('strong', { text: nx.label }),
-        h('span', { class: 'kick', text: nx.field })
-      ]));
-    }
-
-    qs.forEach(function (q) {
-      var box = h('div', { class: 'q' });
-      box.appendChild(h('div', {}, [
-        h('span', { class: 'pr', text: q.prompt }),
-        h('span', { class: 'chip ' + (q.complete ? 'passed' : 'failed') + ' kick',
-                    text: q.required_answered + '/' + q.required_total + ' required' })
-      ]));
-      box.appendChild(h('div', { class: 'why', text: q.why || '' }));
-      var fields = h('div', { class: 'fields' });
-      (q.fields || []).forEach(function (f) { fields.appendChild(fieldRow(f)); });
-      box.appendChild(fields);
-      b.body.appendChild(box);
-    });
-    b.body.appendChild(h('div', {}, [
-      todoBtn('Save draft', 'Editing the brief arrives with the local host (M4).'),
-      ' ',
-      todoBtn('Freeze brief', 'Freezing writes the brief and its input hash (M4).')
+  // ---------------------------------------------------------------- questions
+  // One node per question group.  Render only - completion comes from the model.
+  function questionGroup(q) {
+    var box = h('div', { class: 'q' });
+    box.appendChild(h('div', { class: 'qhead' }, [
+      h('span', { class: 'pr', text: q.prompt }),
+      h('span', { class: 'chip ' + (q.complete ? 'passed' : 'attention') + ' kick',
+                  text: q.required_answered + '/' + q.required_total + ' required' })
     ]));
-    b.body.appendChild(h('div', { class: 'muted', style: 'margin-top:6px',
-      text: 'The brief is written as a YAML definition file the existing config loader '
-            + 'already understands; until M4 these fields are read-only.' }));
-    return b.root;
+    if (q.why) { box.appendChild(h('div', { class: 'why', text: q.why })); }
+    var fields = h('div', { class: 'fields' });
+    (q.fields || []).forEach(function (f) { fields.appendChild(fieldRow(f)); });
+    box.appendChild(fields);
+    return box;
+  }
+
+  function questionGroups(ids) {
+    var want = ids || [];
+    return (view.questions || []).filter(function (q) {
+      return want.indexOf(q.id) >= 0;
+    }).map(questionGroup);
+  }
+
+  // ---------------------------------------------------------------- accordion
+  function stageChipCls(s) {
+    return s === 'complete' ? 'passed'
+      : (s === 'blocked' || s === 'failed') ? 'failed'
+      : s === 'needs_input' ? 'attention'
+      : s === 'locked' ? 'locked' : 'running';
+  }
+
+  function stageStatusWord(s) {
+    return s === 'needs_input' ? 'needs input'
+      : s === 'in_progress' ? 'in progress'
+      : (s || 'pending');
+  }
+
+  function stageBodyContent(stage) {
+    var frag = document.createDocumentFragment();
+    if (stage.locked) {
+      frag.appendChild(h('div', { class: 'locked-why' }, [
+        h('strong', { text: 'Locked \u2014 ' }),
+        h('span', { text: stage.locked_reason || 'an earlier stage is unfinished.' })
+      ]));
+    }
+    if (stage.gate_failed && stage.gate_failed.length) {
+      frag.appendChild(h('div', { class: 'locked-why failed' },
+        ['Not passing: ' + stage.gate_failed.join(', ')]));
+    }
+    questionGroups(stage.group_ids).forEach(function (n) { frag.appendChild(n); });
+
+    if (stage.gates && stage.gates.length) {
+      var gbox = h('div', { class: 'gates' });
+      stage.gates.forEach(function (g) { gbox.appendChild(gateRow(g)); });
+      frag.appendChild(h('div', { class: 'gates-wrap' }, [
+        h('div', { class: 'sub muted', text: 'Pipeline stages in this step' }), gbox
+      ]));
+    }
+    (stage.panels || []).forEach(function (p) {
+      if (p === 'manual_bem') { frag.appendChild(bandManualBem()); }
+      if (p === 'import') { frag.appendChild(bandImport()); }
+      if (p === 'outcome') { frag.appendChild(bandOutcome()); }
+      if (p === 'rerun') { frag.appendChild(bandRerun()); }
+    });
+    if (!stage.group_ids.length && !(stage.panels || []).length &&
+        !(stage.gates || []).length) {
+      frag.appendChild(h('div', { class: 'muted',
+        text: 'Nothing to answer here \u2014 this step reports a pipeline result.' }));
+    }
+    return frag;
+  }
+
+  // Every section is built once and then shown or hidden, so any content inside
+  // survives opening another stage.
+  var openState = {};
+
+  function stageAccordion(stage) {
+    var headId = 'acc-h-' + stage.id;
+    var bodyId = 'acc-b-' + stage.id;
+    var open = (stage.id in openState) ? openState[stage.id]
+                                       : !!stage.open_by_default;
+
+    var btn = h('button', { type: 'button', class: 'acc-head', id: headId,
+                            'aria-expanded': open ? 'true' : 'false',
+                            'aria-controls': bodyId });
+    btn.appendChild(h('span', { class: 'acc-icon', 'aria-hidden': 'true',
+                               text: open ? '\u25be' : '\u25b8' }));
+    btn.appendChild(h('span', { class: 'acc-name', text: stage.name }));
+    btn.appendChild(h('span', { class: 'acc-count muted',
+      text: stage.required_total
+        ? (stage.required_answered + ' of ' + stage.required_total + ' required')
+        : 'report only' }));
+    if (stage.blocker_count) {
+      btn.appendChild(h('span', { class: 'chip attention',
+        text: stage.blocker_count + ' blocker'
+              + (stage.blocker_count === 1 ? '' : 's') }));
+    } else if (stage.locked) {
+      btn.appendChild(h('span', { class: 'chip locked', text: 'locked' }));
+    }
+    btn.appendChild(h('span', { class: 'chip ' + stageChipCls(stage.status),
+                               text: stageStatusWord(stage.status) }));
+
+    var body = h('div', { class: 'acc-body', id: bodyId, role: 'region',
+                          'aria-labelledby': headId });
+    body.appendChild(stageBodyContent(stage));
+    if (!open) { body.hidden = true; }
+
+    btn.addEventListener('click', function () {
+      var next = btn.getAttribute('aria-expanded') !== 'true';
+      btn.setAttribute('aria-expanded', next ? 'true' : 'false');
+      body.hidden = !next;
+      btn.querySelector('.acc-icon').textContent = next ? '\u25be' : '\u25b8';
+      openState[stage.id] = next;
+    });
+
+    var sec = h('section', { class: 'acc acc-' + stage.status });
+    sec.appendChild(btn);
+    sec.appendChild(body);
+    return sec;
+  }
+
+  // standard accordion keyboard set: Up/Down between headers, Home/End to the ends
+  function wireAccordionKeys(heads) {
+    heads.forEach(function (btn, i) {
+      btn.addEventListener('keydown', function (ev) {
+        var j = null;
+        if (ev.key === 'ArrowDown') { j = (i + 1) % heads.length; }
+        else if (ev.key === 'ArrowUp') { j = (i - 1 + heads.length) % heads.length; }
+        else if (ev.key === 'Home') { j = 0; }
+        else if (ev.key === 'End') { j = heads.length - 1; }
+        if (j !== null) { ev.preventDefault(); heads[j].focus(); }
+      });
+    });
   }
 
 
@@ -587,15 +686,40 @@
     var pane = document.getElementById('pane-workflow');
     if (!pane) return;
     clear(pane);
-    if (view.mode === 'first_run') {
-      pane.appendChild(h('div', { class: 'placeholder', style: 'margin-bottom:12px',
-        text: 'No run yet. Answer the five required questions below, freeze the brief, '
-              + 'then start a run.' }));
+    pane.appendChild(summaryBand());
+
+    var stages = view.workflow_stages || [];
+    if (!stages.length) {
+      pane.appendChild(h('div', { class: 'placeholder',
+        text: 'This page was generated by an older view schema and has no workflow '
+              + 'stages. Re-render it with: python3 -m hornflow.cli <params> '
+              + '--emit-ui <run dir>' }));
+      return;
     }
-    [bandCurrentState(), bandNextAction(), bandGates(), bandQuestions(),
-     bandManualBem(), bandImport(), bandOutcome(), bandRerun()].forEach(function (n) {
-      if (n) pane.appendChild(n);
+
+    var wrap = h('div', { class: 'stages' });
+    var heads = [];
+    stages.forEach(function (stage) {
+      var sec = stageAccordion(stage);
+      wrap.appendChild(sec);
+      heads.push(sec.querySelector('.acc-head'));
     });
+    pane.appendChild(wrap);
+    wireAccordionKeys(heads);
+
+    var comp = view.completion || {};
+    if (comp.blocker_count) {
+      pane.appendChild(h('div', { class: 'muted stamp' },
+        [String(comp.blocker_count) + ' required answer'
+         + (comp.blocker_count === 1 ? '' : 's') + ' still missing \u2014 '
+         + 'the first incomplete stage is open above.']));
+    }
+    if (view.host === 'static') {
+      pane.appendChild(h('div', { class: 'ro-note muted',
+        text: 'Read-only snapshot: HornFlow generated this page from the run '
+              + 'artifacts. Actions that would change state are disabled and paired '
+              + 'with a Copy command; they become live with the local host (M4).' }));
+    }
   }
 
   function renderResults() {

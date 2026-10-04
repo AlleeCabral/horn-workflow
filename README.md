@@ -133,8 +133,16 @@ no new dependency:
 | tab | what it is |
 |---|---|
 | **Viewer** | the geometry, unchanged, plus a `Dimensions` overlay (default **m**, `mm` toggle) |
-| **Workflow** | the gates, the current state, the required questions, the single next action, the manual AKABAK checkpoint, the `.vips` import panel, the validation outcome and the rerun panel |
+| **Workflow** | a persistent current-state summary, then the nine process stages as **accessible accordions** — each showing its own answers and gates, with the current stage open by default. Locked stages stay visible, collapsed, with the reason. Includes the manual AKABAK checkpoint, the `.vips` import panel, the validation outcome and the rerun panel. Everything is read from the model: the browser never computes completion. |
 | **Results** | a labelled placeholder for the next milestone |
+
+Screenshots of the redesign (and of the tab it replaced) are in
+[`docs/ui/`](docs/ui/README.md); regenerate them with `tools/shoot_ui.sh <run_dir>`.
+
+The nine Workflow stages are: Project and deployment · Driver and provenance ·
+Safety and electrical limits · Acoustic target · Envelope and manufacturing ·
+Architecture selection · Acoustic and folded design · Verification and AKABAK ·
+Final decision.
 
 ```bash
 python3 run_pipeline.py params/horn_jbl_1200b.yaml --out runs
