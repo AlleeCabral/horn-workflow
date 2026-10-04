@@ -21,6 +21,7 @@ ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 
 from hornflow import config, report, response  # noqa: E402
+from hornflow.domain.excursion import RMS_TO_PEAK  # noqa: E402
 
 FIX = ROOT / "tests" / "fixtures" / "baseline"
 MAN = json.loads((FIX / "manifest.json").read_text(encoding="utf-8"))
@@ -58,7 +59,8 @@ def test_metrics_match_baseline():
         "spl_band_variation_db": r.variations_db(t.f_low, t.f_high),
         "ze_min_ohm": float(np.min(np.abs(r.Ze))),
         "ze_max_ohm": float(np.max(np.abs(r.Ze))),
-        "excursion_max_mm": float(np.max(exc)) * 1e3,
+        "excursion_rms_max_mm": float(np.max(exc)) * 1e3,
+        "excursion_peak_max_mm": float(np.max(exc)) * RMS_TO_PEAK * 1e3,
         "di_min_db": float(np.min(r.di)),
         "di_max_db": float(np.max(r.di)),
         "k_rm_at_fc": float(r.derived["k_rm_at_fc"]),

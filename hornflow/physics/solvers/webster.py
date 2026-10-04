@@ -14,6 +14,7 @@ import numpy as np
 from ... import __version__
 from ... import response as _response
 from ...domain.evidence import EvidenceLabel
+from ...domain.excursion import RMS_TO_PEAK
 from .base import SimulationRun
 
 SOLVER_NAME = "hornflow-webster-1p"
@@ -65,7 +66,8 @@ class WebsterSolver:
             spl_db=np.asarray(r.spl, dtype=float),
             impedance_real_ohm=np.real(ze),
             impedance_imag_ohm=np.imag(ze),
-            excursion_m=np.abs(r.excursion),
+            excursion_rms_m=np.abs(r.excursion),
+            excursion_peak_m=np.abs(r.excursion) * RMS_TO_PEAK,
             phase_deg=np.degrees(phase),
             throat_velocity_m_s=u_throat / st,
             mouth_velocity_m_s=u_mouth / sm,
@@ -93,7 +95,9 @@ def _metrics(r, p) -> dict:
         "spl_variation_db": float(r.variations_db(t.f_low, t.f_high)),
         "ze_min_ohm": float(np.min(np.abs(r.Ze))),
         "ze_max_ohm": float(np.max(np.abs(r.Ze))),
-        "excursion_max_mm": float(np.max(exc) * 1e3),
+        # rms is the solver convention; peak is the one that compares with Xmax
+        "excursion_rms_mm": float(np.max(exc) * 1e3),
+        "excursion_peak_mm": float(np.max(exc) * RMS_TO_PEAK * 1e3),
         "excursion_max_at_hz": float(r.f[int(np.argmax(exc))]),
         "di_min_db": float(np.min(r.di)),
         "di_max_db": float(np.max(r.di)),

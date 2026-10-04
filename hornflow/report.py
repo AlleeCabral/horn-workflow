@@ -4,30 +4,121 @@ from __future__ import annotations
 
 import datetime as _dt
 import math
+from dataclasses import dataclass, field
 from pathlib import Path
 
 import numpy as np
 
 from . import theory
 from .config import Params
+from .domain import excursion
 from .response import Result
 
 
 def write_csv(r: Result, path: str | Path) -> Path:
-    """Write all curves to a single CSV (one row per frequency)."""
+    """Write all curves to a single CSV (one row per frequency).
+
+    Excursion is exported **twice on purpose** - ``excursion_rms_mm`` is what the
+    solver computes (rms drive convention) and ``excursion_peak_mm`` is the
+    one-way peak, ``sqrt(2) * rms``.  Named separately so no reader has to guess
+    which convention a column holds; see ``hornflow.domain.excursion``.
+    """
+    from .domain.excursion import RMS_TO_PEAK
+
     path = Path(path)
     path.parent.mkdir(parents=True, exist_ok=True)
+    x_rms_mm = np.abs(r.excursion) * 1e3
     data = np.column_stack([
         r.f,
         np.abs(r.Zt), r.Zt.real, r.Zt.imag,
         np.abs(r.Ze), np.angle(r.Ze, deg=True), np.abs(r.current),
-        np.abs(r.excursion) * 1e3,
+        x_rms_mm, x_rms_mm * RMS_TO_PEAK,
         np.abs(r.p_axis), r.spl, r.di,
     ])
-    header = ("freq_hz,Zt_abs,Zt_re,Zt_im,Ze_abs,Ze_phase_deg,I_abs,"
-              "excursion_peak_mm,p_abs_Pa,spl_db,di_db")
-    np.savetxt(path, data, delimiter=",", header=header, comments="", fmt="%.6g")
+    np.savetxt(path, data, delimiter=",", header=CURVES_HEADER, comments="",
+               fmt="%.6g")
     return path
+
+
+# --------------------------------------------------------------------------- #
+#  curves.csv schema (v2) and the legacy reader
+# --------------------------------------------------------------------------- #
+# v2 adds ``excursion_peak_mm`` after ``excursion_rms_mm``.
+CURVES_HEADER = ("freq_hz,Zt_abs,Zt_re,Zt_im,Ze_abs,Ze_phase_deg,I_abs,"
+                 "excursion_rms_mm,excursion_peak_mm,p_abs_Pa,spl_db,di_db")
+# v1 (<= 2026-10-03) called the rms column ``excursion_peak_mm``.  The *values*
+# were always rms, so a v1 file is migrated by renaming that column and deriving
+# the peak one - the numbers are never reinterpreted.
+CURVES_HEADER_V1 = ("freq_hz,Zt_abs,Zt_re,Zt_im,Ze_abs,Ze_phase_deg,I_abs,"
+                    "excursion_peak_mm,p_abs_Pa,spl_db,di_db")
+CURVES_SCHEMA_V1 = "1"
+CURVES_SCHEMA = "2"
+
+
+@dataclass
+class CurveTable:
+    """A parsed curves CSV, with the schema it came from and any migration note."""
+
+    schema: str
+    columns: dict
+    migrated_from: str | None = None
+    notes: list = field(default_factory=list)
+
+    def __getitem__(self, name):
+        return self.columns[name]
+
+    def __contains__(self, name) -> bool:
+        return name in self.columns
+
+    def excursion_summary(self, **kw):
+        """Band summary using the canonical rms column of this table."""
+        from .domain.excursion import summarize
+
+        return summarize(self.columns["excursion_rms_mm"] / 1e3,
+                         self.columns["freq_hz"], **kw)
+
+
+def _parse_curves(path: str | Path) -> tuple:
+    path = Path(path)
+    with path.open("r", encoding="utf-8-sig", newline="") as fh:
+        lines = fh.read().splitlines()
+    if not lines:
+        raise ValueError(f"{path}: empty curves file")
+    names = [h.strip() for h in lines[0].split(",")]
+    rows = [ln.split(",") for ln in lines[1:] if ln.strip()]
+    return names, rows
+
+
+def read_csv(path: str | Path) -> CurveTable:
+    """Read a curves CSV, honouring both schema versions.
+
+    v1 files (``excursion_peak_mm`` holding rms values) are migrated *in memory*
+    with an explicit note - the bytes on disk are never rewritten, and a v1 file
+    is never silently treated as if its excursion column were peak.
+    """
+    from .domain.excursion import RMS_TO_PEAK
+
+    names, rows = _parse_curves(path)
+    cols = {n: np.array([float(v) for v in r], dtype=float)
+            for n, r in zip(names, zip(*rows))} if rows else {n: np.array([]) for n in names}
+
+    if "excursion_rms_mm" in names and "excursion_peak_mm" in names:
+        return CurveTable(schema=CURVES_SCHEMA, columns=cols)
+
+    if "excursion_peak_mm" in names:
+        # v1: the column is really rms.
+        cols["excursion_rms_mm"] = cols["excursion_peak_mm"]
+        cols["excursion_peak_mm"] = cols["excursion_rms_mm"] * RMS_TO_PEAK
+        return CurveTable(
+            schema=CURVES_SCHEMA_V1, columns=cols, migrated_from=CURVES_SCHEMA_V1,
+            notes=["v1 curves file: the column named 'excursion_peak_mm' held rms "
+                   "displacement (solver drive convention is volts rms). Renamed to "
+                   "'excursion_rms_mm' in memory and 'excursion_peak_mm' derived as "
+                   "sqrt(2) x rms. Values untouched."])
+
+    raise ValueError(
+        f"{path}: unrecognised curves header {names!r}; expected "
+        f"{CURVES_SCHEMA_V1!r} or {CURVES_SCHEMA!r}")
 
 
 def guidance_lines(params: Params, r: Result) -> list:
@@ -142,20 +233,33 @@ def guidance_lines(params: Params, r: Result) -> list:
         )
 
     # ---- excursion ---------------------------------------------------------------
-    x_max = float(np.max(np.abs(r.excursion))) * 1e3
-    f_x = r.f[int(np.argmax(np.abs(r.excursion)))]
-    xmax_mm = None if params.driver.Xmax is None else params.driver.Xmax * 1e3
-    if xmax_mm:
+    # Both conventions are stated explicitly.  The *peak* value is what must be
+    # compared with Xmax, which the data sheet gives as one-way peak travel.
+    xr = np.abs(r.excursion)
+    esum = excursion.summarize(xr, r.f,
+                               drive_voltage_vrms=params.simulation.voltage,
+                               re_ohm=params.driver.Re,
+                               xmax_m=params.driver.Xmax,
+                               xmax_convention=getattr(params.driver,
+                                                       "Xmax_convention", None))
+    x_rms = esum.rms_max_m * 1e3
+    x_peak = esum.peak_max_m * 1e3
+    f_x = esum.f_at_max_hz
+    con = excursion.convention_label(getattr(params.driver, "Xmax_convention", None))
+    if esum.has_xmax:
         out.append(
-            f"Excursion: {x_max:.2f} mm peak at {f_x:.0f} Hz with "
-            f"{params.simulation.voltage:.2f} V - that is {100.0 * x_max / xmax_mm:.0f} % of the "
-            f"driver's {xmax_mm:.1f} mm Xmax. " + excursion_power_text(r, params, xmax_mm)
+            f"Excursion: {x_rms:.2f} mm rms / {x_peak:.2f} mm one-way peak at "
+            f"{f_x:.0f} Hz with {params.simulation.voltage:.2f} V rms - the peak "
+            f"travel is {esum.peak_used_pct:.0f} % of the driver's "
+            f"{esum.xmax_one_way_peak_m * 1e3:.1f} mm Xmax ({con}). "
+            + excursion_power_text(esum)
         )
     else:
         out.append(
-            f"Excursion: {x_max:.2f} mm peak at {f_x:.0f} Hz with "
-            f"{params.simulation.voltage:.2f} V. Compare that with the driver's Xmax - below "
-            f"the cut-off excursion grows quickly because the horn no longer loads the "
+            f"Excursion: {x_rms:.2f} mm rms / {x_peak:.2f} mm one-way peak at "
+            f"{f_x:.0f} Hz with {params.simulation.voltage:.2f} V rms. Compare the "
+            f"**peak** figure with the driver's Xmax (one-way peak) - below the "
+            f"cut-off excursion grows quickly because the horn no longer loads the "
             f"diaphragm. (Add 'Xmax: <mm>' to the driver file to have this checked "
             f"automatically.)"
         )
@@ -181,23 +285,29 @@ def guidance_lines(params: Params, r: Result) -> list:
     return out
 
 
-def excursion_power_text(r: Result, params: Params, xmax_mm: float) -> str:
-    """Where the diaphragm would hit Xmax, given that excursion scales with voltage."""
-    x = np.abs(r.excursion)
-    i = int(np.argmax(x))
-    if x[i] <= 0.0:
+def excursion_power_text(esum: excursion.ExcursionSummary) -> str:
+    """Where the diaphragm would hit Xmax, given that excursion scales with voltage.
+
+    Takes the *summary* rather than raw arrays so the like-for-like convention
+    (peak travel vs one-way peak Xmax) is applied in exactly one place.  Before
+    2026-10-04 this compared rms travel with a peak Xmax and so reported the
+    drive voltage at which Xmax is reached as ~sqrt(2) too high, and the power as
+    twice too high.
+    """
+    if not esum.has_xmax or esum.peak_max_m <= 0.0:
         return "Excursion is negligible at this drive level."
-    f_x = float(r.f[i])
-    v_at = params.simulation.voltage * (xmax_mm * 1e-3) / x[i]
-    p_at = v_at ** 2 / params.driver.Re
-    p_now = params.simulation.voltage ** 2 / params.driver.Re
+    v_at = esum.voltage_vrms_at_xmax
+    p_at = esum.power_w_at_xmax
+    headroom = 20.0 * math.log10(
+        max((v_at or 0.0) / esum.drive_voltage_vrms, 1e-6)) if v_at else float("inf")
     return (
-        f"Excursion scales with voltage, so Xmax would be reached at about {v_at:.0f} V "
-        f"(~{p_at:.0f} W into the {params.driver.Re:.1f} ohm coil) at {f_x:.0f} Hz. "
-        f"This drive level is {p_now:.1f} W, so you have roughly "
-        f"{20.0 * math.log10(max(v_at / params.simulation.voltage, 1e-6)):.0f} dB of travel "
-        f"headroom; below the cut-off excursion grows quickly because the horn stops loading "
-        f"the diaphragm, so high-pass the signal there if you plan to use that power."
+        f"Excursion scales with voltage, so {esum.xmax_one_way_peak_m * 1e3:.1f} mm "
+        f"peak travel would be reached at about {v_at:.0f} V rms "
+        f"(~{p_at:.0f} W into the {esum.re_ohm:.1f} ohm coil) at "
+        f"{esum.f_at_max_hz:.0f} Hz. This drive level is {esum.drive_power_w:.1f} W, "
+        f"so you have roughly {headroom:.0f} dB of travel headroom; below the cut-off "
+        f"excursion grows quickly because the horn stops loading the diaphragm, so "
+        f"high-pass the signal there if you plan to use that power."
     )
 
 
@@ -246,8 +356,10 @@ def summary_text(params: Params, r: Result) -> str:
         f"on-axis SPL (band)  : {r.band_spl(t.f_low, t.f_high):.1f} dB mean, "
         f"{r.variations_db(t.f_low, t.f_high):.1f} dB peak-to-peak",
         f"electrical impedance: {np.abs(r.Ze).min():.2f} - {np.abs(r.Ze).max():.2f} ohm",
-        f"peak excursion      : {np.max(np.abs(r.excursion)) * 1e3:.2f} mm at "
+        f"excursion rms       : {np.max(np.abs(r.excursion)) * 1e3:.2f} mm at "
         f"{r.f[int(np.argmax(np.abs(r.excursion)))]:.0f} Hz",
+        f"excursion peak (1w) : {np.max(np.abs(r.excursion)) * excursion.RMS_TO_PEAK * 1e3:.2f} "
+        f"mm at {r.f[int(np.argmax(np.abs(r.excursion)))]:.0f} Hz",
         f"directivity (mouth) : DI {r.di.min():.1f} - {r.di.max():.1f} dB, Q(coverage) = "
         f"{d['q_coverage']:.1f}, intercept = {d['directivity_intercept_hz']:.0f} Hz",
     ]

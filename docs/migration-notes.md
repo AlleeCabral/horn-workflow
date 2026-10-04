@@ -190,3 +190,34 @@ The pipeline CLI detects an export folder that lives inside a run directory and
 * **Spiral / serpentine / 3-D folds** - extension points exist
   (`fold/generators.py`, `fold/paths.py`); straight, J and U are wired.
 
+## Schema migrations applied in this milestone
+
+### curves.csv v1 -> v2 (header-based, in memory)
+
+v1 header: `... I_abs, excursion_peak_mm, p_abs_Pa, spl_db, di_db` (11 columns).
+The column called `excursion_peak_mm` held **rms** displacement.
+
+v2 header: `... I_abs, excursion_rms_mm, excursion_peak_mm, p_abs_Pa, spl_db, di_db`
+(12 columns). `excursion_peak_mm = sqrt(2) x excursion_rms_mm`.
+
+`report.read_csv()` returns a `CurveTable` with `schema`, `migrated_from` and
+`notes`. A v1 file is renamed in memory — **the numbers are never reinterpreted and
+the file on disk is never rewritten**. `tests/test_excursion_convention.py` covers
+detection, the values, and v1/v2 agreement.
+
+### state.json 1.0 -> 1.1 (registered migration)
+
+`simulation_runs[].excursion_m` (rms values under a peak-sounding name) becomes
+`excursion_rms_m` plus a derived `excursion_peak_m`. The applied migration is
+recorded in the new `state.migrations` list, so it is explicit and inspectable
+rather than silent. `hornflow/domain/state.py` refuses any version with no
+registered path forward.
+
+### Deliberate baseline regeneration (once)
+
+`tests/fixtures/baseline/{manifest.json,jbl_1200b_curves.csv}` were regenerated for
+the header change. Every physical metric is unchanged (`spl_band_mean_db` 104.5344,
+`spl_band_variation_db` 8.0293, `ze_min_ohm` 4.0424, ...); the manifest now records
+`excursion_rms_max_mm` = 0.54858 alongside `excursion_peak_max_mm` = 0.77581
+(= 0.54858 x sqrt(2)), plus the `curves_schema` and `state_schema` it belongs to.
+

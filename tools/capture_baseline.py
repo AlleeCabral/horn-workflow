@@ -26,6 +26,8 @@ ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 
 from hornflow import config, report, response  # noqa: E402
+from hornflow.domain.excursion import RMS_TO_PEAK  # noqa: E402
+from hornflow.domain.state import SCHEMA_VERSION  # noqa: E402
 
 EXAMPLE = ROOT / "params" / "horn_jbl_1200b.yaml"
 FIXDIR = ROOT / "tests" / "fixtures" / "baseline"
@@ -48,7 +50,8 @@ def metrics(params, r) -> dict:
         "spl_band_variation_db": round(r.variations_db(t.f_low, t.f_high), 4),
         "ze_min_ohm": round(float(np.min(ze)), 4),
         "ze_max_ohm": round(float(np.max(ze)), 4),
-        "excursion_max_mm": round(float(np.max(exc)) * 1e3, 5),
+        "excursion_rms_max_mm": round(float(np.max(exc)) * 1e3, 5),
+        "excursion_peak_max_mm": round(float(np.max(exc)) * RMS_TO_PEAK * 1e3, 5),
         "excursion_max_at_hz": round(float(r.f[i_max]), 4),
         "di_min_db": round(float(np.min(r.di)), 4),
         "di_max_db": round(float(np.max(r.di)), 4),
@@ -80,6 +83,13 @@ def main() -> int:
         "platform": platform.platform(),
         "git_commit": None,          # no VCS in this workspace
         "deterministic": deterministic,
+        "curves_schema": report.CURVES_SCHEMA,
+        "state_schema": SCHEMA_VERSION,
+        "curves_notes": (
+            "v2: excursion is exported twice - excursion_rms_mm (solver convention) "
+            "and excursion_peak_mm = sqrt(2) x rms. Before 2026-10-04 the single "
+            "column was named excursion_peak_mm while holding rms values."
+        ),
         "metrics": m,
         "checksums": {
             "jbl_1200b_curves.csv": sha256(curves),

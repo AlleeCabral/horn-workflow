@@ -32,7 +32,9 @@ def _metrics(params) -> dict:
         "spl_mean_db": round(mean, 3),
         "spl_variation_db": round(var, 3),
         "cutoff_minus3db_hz": round(cutoff, 2),
-        "excursion_max_mm": round(float(np.max(run.excursion_m)) * 1e3, 4),
+        # rms is the solver convention; peak is the one that compares with Xmax
+        "excursion_rms_mm": round(float(np.max(run.excursion_rms_m)) * 1e3, 4),
+        "excursion_peak_mm": round(float(np.max(run.peak_excursion_m)) * 1e3, 4),
         "mouth_area_cm2": round(float(design.Sm) * 1e4, 1),
         "depth_mm": round(float(design.length) * 1e3, 1),
         "envelope_m3": round(float(design.build_volume_l()) * 1e-3, 4),
@@ -88,7 +90,7 @@ def run_sensitivity(param_path, levers=LEVERS) -> list:
 
 def _delta(case: dict, base: dict) -> dict:
     keys = ("spl_mean_db", "spl_variation_db", "cutoff_minus3db_hz",
-            "excursion_max_mm", "envelope_m3")
+            "excursion_rms_mm", "excursion_peak_mm", "envelope_m3")
     out = {}
     for k in keys:
         if k in case and k in base:

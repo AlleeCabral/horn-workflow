@@ -112,3 +112,41 @@ model is handled by one translation point (`app/view.py`) plus a golden test.
 acceptance test is that a regenerated `viewer.html` behaves identically and a run
 without `app_view` shows only the Viewer tab; M4's acceptance test is one real JBL
 run driven end to end from the Workflow tab.
+
+---
+
+## ADR-0012 — one source of truth for excursion and Xmax conventions
+
+**Problem.** `curves.csv` exported a column named `excursion_peak_mm` that held
+**rms** displacement. `response.simulate()` drives the lumped-element network with
+`sim.voltage` in volts rms (2.83 V), so `current = V/Ze`, `velocity = Bl·I/Zm` and
+`excursion = velocity/(jω)` are *all* rms phasors. The label was wrong, so every
+"Xmax is reached at N volts" figure was optimistic by √2 in voltage and 2× in power
+(59 V / 952 W instead of 41 V / 476 W) — an error in the unsafe direction, and the
+hard gate compared rms travel against a one-way-peak Xmax.
+
+**Alternatives.** (a) Multiply the stored values by √2 and keep the old name — this
+silently changes every historical number. (b) Keep the name, fix only the text —
+leaves the trap in place for the next reader. (c) Both columns, explicit names,
+centralised conversion, header-based migration.
+
+**Decision.** (c). `hornflow/domain/excursion.py` is the single source of truth for
+`RMS_TO_PEAK`, the Xmax convention (default `one_way_peak`, validated, never
+guessed), `xmax_one_way_peak()`, `summarize()` and `excursion_gate()`. The solver
+convention stays rms; CSV/schema carry `excursion_rms_m` **and**
+`excursion_peak_m`; the gate and every report compare peak against one-way peak.
+
+**Backward compatibility.** `report.read_csv()` detects v1 headers and migrates in
+memory with an explicit note (values never reinterpreted); the state schema went
+1.0 → 1.1 with a registered migration that renames `excursion_m` and records itself
+in the new `state.migrations` list. Both are header/field-name based, so an old file
+is never silently treated as if its excursion column were peak.
+
+**Consequences.** The baseline fixture and its checksum were regenerated *once*,
+deliberately: SPL, impedance and every other metric are bit-identical, only the
+header and the added peak column changed. `docs/migration-notes.md` records it.
+
+**Validation.** `tests/test_excursion_convention.py` (27 tests) proves the rms
+convention from the generating calculation, asserts `peak = √2·rms`, checks the v1
+migration, and includes a gate test where a driver whose rms travel fits but whose
+peak travel does not **must** fail.

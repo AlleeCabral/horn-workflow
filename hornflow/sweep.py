@@ -23,6 +23,7 @@ import matplotlib.pyplot as plt          # noqa: E402
 import numpy as np                        # noqa: E402
 
 from . import config, report, response     # noqa: E402
+from .domain.excursion import RMS_TO_PEAK  # noqa: E402
 
 
 def parse_sweep_arg(text: str) -> tuple:
@@ -107,7 +108,8 @@ def _metrics(r, params) -> dict:
         "spl_variation_db": r.variations_db(t.f_low, t.f_high),
         "ze_min_ohm": float(np.abs(r.Ze).min()),
         "ze_max_ohm": float(np.abs(r.Ze).max()),
-        "excursion_max_mm": float(np.max(np.abs(r.excursion)) * 1e3),
+        "excursion_rms_mm": float(np.max(np.abs(r.excursion)) * 1e3),
+        "excursion_peak_mm": float(np.max(np.abs(r.excursion)) * RMS_TO_PEAK * 1e3),
         "warnings": len(r.warnings),
     }
 
@@ -151,7 +153,7 @@ def run(path, axes: dict, out_dir, make_plots: bool = True, progress=None) -> di
 METRIC_KEYS = ["fc_hz", "mouth_diameter_mm", "mouth_width_mm", "mouth_height_mm",
                "mouth_shape", "length_mm", "envelope_m3", "air_volume_l", "area_ratio", "k_rm",
                "k_rm_band", "k_rt_at_fc", "spl_mean_db", "spl_variation_db", "ze_min_ohm",
-               "ze_max_ohm", "excursion_max_mm", "warnings"]
+               "ze_max_ohm", "excursion_rms_mm", "excursion_peak_mm", "warnings"]
 
 
 def mouth_text(m: dict) -> str:
@@ -316,7 +318,7 @@ def write_report(rows: list, axes: dict, source, path: Path, files: list | None 
         md.append(f"| {r.label} | {mouth_text(m)} | {m['length_mm']:.0f} | "
                   f"{m['fc_hz']:.0f}{flag} | {m['k_rm']:.2f} | {m['k_rm_band']:.2f} | "
                   f"{m['spl_variation_db']:.1f} | {m['spl_mean_db']:.1f} | "
-                  f"{m['excursion_max_mm']:.2f} | {m['envelope_m3']:.2f} |")
+                  f"{m['excursion_peak_mm']:.2f} | {m['envelope_m3']:.2f} |")
     md += [""]
 
     if failed:
