@@ -136,6 +136,18 @@ FIRST_RUN_QUESTIONS = (
 
 
 
+# --------------------------------------------------------------------------- #
+#  the accept-as-unvalidated reason list (fixed list, plus Other)
+# --------------------------------------------------------------------------- #
+ACCEPT_REASONS = (
+    "Boundary-condition mismatch is understood but unresolved",
+    "AKABAK Free/export limitation",
+    "Partial evidence accepted for prototype only",
+    "Comparison tolerance intentionally waived",
+    "Candidate retained for geometry/manufacturing review only",
+    "Other",
+)
+
 # ---------------------------------------------------------------------------
 #  field presentation + completion metadata
 # ---------------------------------------------------------------------------
@@ -239,7 +251,8 @@ WORKFLOW_STAGES = (
 GATE_OK_STATES = ("passed", "skipped")
 
 
-def _workflow_stages(questions: list, gates: list, *, run_exists: bool) -> list:
+def _workflow_stages(questions: list, gates: list, *, run_exists: bool,
+                     bem_open: bool = False) -> list:
     """Derive the nine stage rows: status, answer counts, lock reason, default open.
 
     A stage is complete when none of its required answers is outstanding and every
@@ -263,7 +276,20 @@ def _workflow_stages(questions: list, gates: list, *, run_exists: bool) -> list:
         not_done = ([] if not run_exists else
                     [g["stage"] for g in owned if g["status"] not in GATE_OK_STATES])
 
+        # The manual BEM loop is not a pipeline gate: while it is open (the human
+        # still has to solve and export), the verification stage is unfinished even
+        # though every gate it owns has "passed" or been deliberately "skipped".
+        manual_open = bool(bem_open) and "THREE_DIMENSIONAL_VERIFICATION" in spec["gates"]
+
         missing = [s for s in spec["requires"] if status_by_id.get(s) != "complete"]
+        # Evidence beats the lock: a stage whose own gates have already run is not
+        # "locked" - the work visibly happened.  Without this, the four
+        # engineering stages would read "locked" forever on a real run whose brief
+        # questions were never entered, even though their gates had all passed.
+        gates_done = bool(owned) and run_exists and all(
+            g["status"] in GATE_OK_STATES for g in owned)
+        locked = bool(missing) and not gates_done
+
         # Answer-driven stages complete on their answers; gates are then
         # informational, so a pending pipeline stage cannot hold the brief back.
         # A stage with no questions of its own is pure pipeline work, and cannot
@@ -275,17 +301,8 @@ def _workflow_stages(questions: list, gates: list, *, run_exists: bool) -> list:
         else:
             gates_ok = bool(owned) and all(
                 g["status"] in GATE_OK_STATES for g in owned)
-
-        # Evidence beats the lock: a stage whose own gates have already run is not
-        # "locked" - the work visibly happened.  Without this, the four
-        # engineering stages would read "locked" forever on a real run whose brief
-        # questions were never entered, even though their gates had all passed.
-        gates_done = bool(owned) and run_exists and all(
-            g["status"] in GATE_OK_STATES for g in owned)
-        locked = bool(missing) and not gates_done
-
         answered_ok = not blockers
-        complete = answered_ok and gates_ok and not locked
+        complete = answered_ok and gates_ok and not locked and not manual_open
 
         if locked:
             status = "locked"
@@ -302,6 +319,10 @@ def _workflow_stages(questions: list, gates: list, *, run_exists: bool) -> list:
         rows.append({
             "id": spec["id"], "order": len(rows), "name": spec["name"],
             "purpose": spec["purpose"], "status": status, "complete": complete,
+            "manual_open": manual_open,
+            "note": ("The external solve is still outstanding: solve in the AKABAK "
+                     "GUI, export the .vips spectra, then import them."
+                     if manual_open else None),
             "required_total": req_total, "required_answered": req_done,
             "blocker_count": len(blockers), "blockers": blockers,
             "group_ids": [g["id"] for g in groups],
@@ -325,24 +346,42 @@ def _workflow_stages(questions: list, gates: list, *, run_exists: bool) -> list:
     return rows
 
 
-def _brief_actions(completion: dict) -> dict:
-    """Save draft / Freeze brief, each with the reason it is enabled or not."""
+def brief_actions_for(completion: dict, *, editable: bool = False,
+                      changed: bool = False) -> dict:
+    """Save draft / Freeze brief, each with the reason it is enabled or not.
+
+    ``editable`` is true only in the local host (M4); the static snapshot has no
+    way to write anything, so both actions explain themselves instead.
+    """
     can_freeze = bool(completion.get("complete"))
     blockers = completion.get("blocker_count") or 0
+    if not editable:
+        save_reason = ("No editable values in a static snapshot - start the local "
+                       "host with: python3 -m hornflow.app --run-dir <run dir>")
+    elif changed:
+        save_reason = ("Unsaved changes in the draft; saving records them and the "
+                       "frozen revision stays as it is.")
+    else:
+        save_reason = "Nothing to save yet - no draft value has changed."
     return {
         "save_draft": {
-            "label": "Save draft", "enabled": False,
-            "reason": "No editable values in this milestone - the brief editor "
-                      "arrives with the local host (M4).",
+            "label": "Save draft", "enabled": bool(editable and changed),
+            "reason": save_reason,
         },
         "freeze_brief": {
-            "label": "Freeze brief", "enabled": can_freeze,
-            "reason": ("Every required answer is present; freezing records the "
-                       "revision and its input hash." if can_freeze else
+            "label": "Freeze brief", "enabled": bool(editable and can_freeze),
+            "reason": ("Every required answer is present; freezing writes the "
+                       "definition file and records the revision and its input hash."
+                       if can_freeze else
                        f"{blockers} required answer"
                        f"{'' if blockers == 1 else 's'} still missing."),
         },
     }
+
+
+def _brief_actions(completion: dict) -> dict:
+    return brief_actions_for(completion, editable=False)
+
 
 
 
@@ -885,6 +924,8 @@ def build_view(state, *, run_dir=None, brief=None, now=None, export_dir=None,
     run_rec = s.get("run") or {}
     validation = s.get("validation") or {}
     bem = validation.get("bem_manual") or {}
+    validation = s.get("validation") or {}
+    accepted_unvalidated = validation.get("accepted_unvalidated") is True
     bem_state = str(bem.get("state") or "INPUTS_GENERATED")
     first_run = not run_rec.get("run_id")
 
@@ -893,7 +934,8 @@ def build_view(state, *, run_dir=None, brief=None, now=None, export_dir=None,
     brief_in = brief if brief is not None else (s.get("requirements") or {})
     questions = _questions(s, first_run, brief_in)
     completion = _completion(questions, run_exists=not first_run)
-    stages = _workflow_stages(questions, gates, run_exists=not first_run)
+    stages = _workflow_stages(questions, gates, run_exists=not first_run,
+                              bem_open=bem_state in BEM_OPEN)
     brief_actions = _brief_actions(completion)
     exp_dir = export_dir
     if exp_dir is None and run_dir is not None:
@@ -922,6 +964,8 @@ def build_view(state, *, run_dir=None, brief=None, now=None, export_dir=None,
             "input_hash": (validation.get("brief") or {}).get("input_hash"),
             "runs_available": list(runs),
         },
+        # a persistent, non-dismissable warning: an unvalidated result was accepted
+        "unvalidated_accepted": accepted_unvalidated,
         "current_state": _current_state(s, bem_state, gates, questions, completion,
                                         stages),
         "next_action": _next_action(mode, gates, questions, bem_state, outcome,
@@ -931,6 +975,8 @@ def build_view(state, *, run_dir=None, brief=None, now=None, export_dir=None,
         "completion": completion,
         "workflow_stages": stages,
         "brief_actions": brief_actions,
+        # the fixed reason list the UI offers when a result is accepted unvalidated
+        "accept_reasons": list(ACCEPT_REASONS),
         "manual_bem": manual,
         "import_panel": import_panel,
         "outcome": outcome,

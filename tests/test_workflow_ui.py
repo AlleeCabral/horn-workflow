@@ -170,7 +170,8 @@ def test_brief_actions_are_disabled_with_a_reason_that_names_the_blocker():
     label = _first_run()
     act = label["brief_actions"]
     assert act["save_draft"]["enabled"] is False
-    assert "M4" in act["save_draft"]["reason"]
+    # the snapshot cannot write, so it names the command that can
+    assert "python3 -m hornflow.app" in act["save_draft"]["reason"]
     assert act["freeze_brief"]["enabled"] is False
     assert "20" in act["freeze_brief"]["reason"]        # the blocker count
     assert "missing" in act["freeze_brief"]["reason"]
@@ -185,8 +186,17 @@ def test_brief_actions_are_disabled_with_a_reason_that_names_the_blocker():
         "max_width_mm": 600, "max_height_mm": 900, "max_depth_mm": 1500,
         "max_mass_kg": 60, "method": "plywood"})
     assert done["completion"]["complete"] is True
-    assert done["brief_actions"]["freeze_brief"]["enabled"] is True
+    # a static snapshot can never freeze, however complete the brief is: the
+    # reason switches to the affirmative wording, and the button stays disabled
+    assert done["brief_actions"]["freeze_brief"]["enabled"] is False
     assert "input hash" in done["brief_actions"]["freeze_brief"]["reason"]
+    assert "\u2014" not in done["brief_actions"]["freeze_brief"]["reason"]
+    # the local host is what turns it on
+    live = V.brief_actions_for(done["completion"], editable=True)
+    assert live["freeze_brief"]["enabled"] is True
+    assert live["save_draft"]["enabled"] is False       # nothing edited yet
+    assert V.brief_actions_for(done["completion"], editable=True,
+                               changed=True)["save_draft"]["enabled"] is True
 
 
 def test_a_fully_answered_brief_completes_every_question_stage():
@@ -209,6 +219,34 @@ def test_a_fully_answered_brief_completes_every_question_stage():
     # the engineering stages now unlock but still need the run
     assert rows["architecture_selection"]["locked"] is False
     assert rows["architecture_selection"]["status"] == "in_progress"
+
+
+def test_the_manual_bem_step_keeps_verification_unfinished():
+    """A run whose gates all passed is still not 'verified' before the GUI solve."""
+    state = _state()
+    state["validation"]["bem_manual"]["state"] = "GUI_REQUIRED"
+    view = V.build_view(state, now=FIXED_NOW)
+    rows = {r["id"]: r for r in view["workflow_stages"]}
+    assert rows["verification_bem"]["complete"] is False
+    assert rows["verification_bem"]["status"] == "in_progress"
+    assert rows["verification_bem"]["manual_open"] is True
+    assert "AKABAK GUI" in rows["verification_bem"]["note"]
+    # once the import decides the state, the stage closes
+    state["validation"]["bem_manual"]["state"] = "BEM_VALIDATED"
+    rows = {r["id"]: r for r in V.build_view(state, now=FIXED_NOW)["workflow_stages"]}
+    assert rows["verification_bem"]["complete"] is True
+    assert rows["verification_bem"]["manual_open"] is False
+    assert rows["verification_bem"]["note"] is None
+    # a rejected import also closes it - the decision was made, honestly
+    state["validation"]["bem_manual"]["state"] = "BEM_REJECTED"
+    rows = {r["id"]: r for r in V.build_view(state, now=FIXED_NOW)["workflow_stages"]}
+    assert rows["verification_bem"]["complete"] is True
+
+
+def test_every_stage_row_carries_the_manual_and_note_fields():
+    for label in (_first_run(), _run_view()):
+        for r in label["workflow_stages"]:
+            assert "manual_open" in r and "note" in r and "blocked_by_evidence" in r
 
 
 # ---------------------------------------------------------------------------
@@ -333,7 +371,9 @@ def test_rendered_dom_has_nine_accordions_with_exactly_one_open(tmp_path):
     for sid in [r["id"] for r in view["workflow_stages"]]:
         assert 'id="acc-b-%s"' % sid in dom
         assert 'id="acc-h-%s"' % sid in dom
-    assert dom.count("Read-only snapshot") == 1
+    # the page labels itself as a snapshot, in the footer and in the run box
+    assert dom.count("Read-only snapshot") >= 1
+    assert "no server to act on" in dom
 
 
 def _rendered_pane(dom, pane="pane-workflow"):

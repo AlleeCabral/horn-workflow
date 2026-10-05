@@ -123,6 +123,31 @@ body {
 .gate .nm { min-width: 0; overflow-wrap: anywhere; }
 .gate .st { font-size: 11px; margin-left: auto; white-space: nowrap; }
 
+/* ---- the live host: note bar, inputs, run box --------------------------- */
+.app-note {
+  flex: 0 0 auto; padding: 5px 12px; font-size: 12px;
+  border-bottom: 1px solid #2a2f38; background: #1c1f25; color: #c8cdd6;
+  overflow-wrap: anywhere;
+}
+.app-note.ok { background: #16211a; color: #86efac; }
+.app-note.warn { background: #241f14; color: #fcd34d; }
+.app-note.bad { background: #241618; color: #fca5a5; }
+.finput {
+  background: #101216; color: #e8e8ea; border: 1px solid #3a4150;
+  border-radius: 4px; padding: 2px 6px; font: inherit; min-width: 0;
+  max-width: 190px;
+}
+.finput:focus-visible { outline: 2px solid #6cb6ff; outline-offset: 1px; }
+.field .funit { font-size: 11px; white-space: nowrap; }
+.run-box { margin-top: 10px; border-top: 1px solid #2a2f38; padding-top: 9px; }
+.run-row { display: flex; align-items: baseline; gap: 8px; flex-wrap: wrap; }
+.run-row .kick { font-size: 11px; }
+.pbar { height: 6px; background: #101216; border: 1px solid #2a2f38;
+        border-radius: 4px; margin: 7px 0 4px; overflow: hidden; }
+.pbar .pfill { height: 100%; background: #3f6f9b; }
+.run-btns { display: flex; align-items: center; gap: 8px; flex-wrap: wrap;
+            margin-top: 8px; }
+
 /* ---- responsive: one column narrow, at most two wide ------------------- */
 @media (max-width: 700px) {
   #pane-workflow { padding: 10px 10px 28px; }

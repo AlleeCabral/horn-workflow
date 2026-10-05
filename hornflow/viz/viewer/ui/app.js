@@ -83,6 +83,65 @@
   }
   function log(msg) { if (window.console) window.console.log('[hornflow-app] ' + msg); }
 
+  // ---------------------------------------------------------------- live host
+  // With no server (a file:// snapshot) every one of these is a no-op, so the
+  // page degrades to exactly the read-only view it always was.
+  var live = {
+    on: false,          // the local host answered GET /api/view
+    dirty: {},          // field key -> value typed but not saved
+    poll: null,
+    lastState: null,
+  };
+
+  function post(path, body) {
+    return fetch(path, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(body || {}),
+    }).then(function (r) {
+      return r.json().then(function (j) {
+        if (!r.ok) {
+          var err = (j && j.error) || {};
+          var extra = err.field_errors
+            ? ' (' + Object.keys(err.field_errors).join(', ') + ')' : '';
+          throw new Error((err.message || ('HTTP ' + r.status)) + extra);
+        }
+        return j;
+      });
+    });
+  }
+
+  function note(msg, cls) {
+    var bar = document.getElementById('app-note');
+    if (!bar) {
+      bar = h('div', { class: 'app-note', id: 'app-note' });
+      var host = document.getElementById('tabs');
+      if (host && host.parentNode) { host.parentNode.insertBefore(bar, host.nextSibling); }
+    }
+    bar.className = 'app-note' + (cls ? ' ' + cls : '');
+    bar.textContent = msg || '';
+    bar.hidden = !msg;
+  }
+
+  function dirtyCount() { return Object.keys(live.dirty).length; }
+
+  function refreshActions() {
+    // Re-render only the summary band: cheap, and it cannot disturb a form field
+    // the user is typing into elsewhere on the page.
+    var pane = document.getElementById('pane-workflow');
+    if (!pane || !pane.firstChild) return;
+    pane.replaceChild(summaryBand(), pane.firstChild);
+  }
+
+  function setField(key, raw, isNumber) {
+    if (raw === '' || raw === null || raw === undefined) {
+      delete live.dirty[key];
+    } else {
+      live.dirty[key] = isNumber ? Number(raw) : raw;
+    }
+    refreshActions();
+  }
+
   // ---------------------------------------------------------------- boot
   var tabButtons = Array.prototype.slice.call(document.querySelectorAll('#tabs .tab'));
   var node = document.getElementById('app_view');
@@ -248,26 +307,168 @@
     }
     b.body.appendChild(primary);
 
-    // the two brief actions, each explaining itself when disabled
+    // the brief actions.  In the local host they really run; in the snapshot they
+    // explain why they cannot.
+    var dirty = dirtyCount();
     var acts = h('div', { class: 'brief-actions' });
-    ['save_draft', 'freeze_brief'].forEach(function (k) {
-      var a = act[k] || {};
-      var attrs = { class: 'btn' + (a.enabled ? ' primary' : ''), type: 'button',
-                    title: a.reason || '', text: a.label || k };
-      if (!a.enabled) { attrs.disabled = 'disabled'; }
+    function actionBtn(label, enabled, why, run, primary) {
+      var attrs = { class: 'btn' + (primary ? ' primary' : ''), type: 'button',
+                    title: why || '', text: label };
+      if (!enabled) { attrs.disabled = 'disabled'; }
+      var btn = h('button', attrs);
+      if (enabled) { btn.addEventListener('click', run); }
       acts.appendChild(h('div', { class: 'ba' }, [
-        h('button', attrs),
-        h('div', { class: 'ba-why muted',
-                   text: (a.enabled ? 'Enabled \u2014 ' : 'Disabled \u2014 ')
-                         + (a.reason || '') })
+        btn, h('div', { class: 'ba-why muted',
+                        text: (enabled ? 'Enabled \u2014 ' : 'Disabled \u2014 ') + (why || '') })
       ]));
+      return btn;
+    }
+    var canSave = live.on && dirty > 0;
+    var canFreeze = live.on && (act.freeze_brief || {}).enabled && dirty === 0;
+    var saveWhy = live.on ? (dirty
+      ? dirty + ' edited value' + (dirty === 1 ? '' : 's') + ' not saved yet.'
+      : (act.save_draft || {}).reason) : (act.save_draft || {}).reason;
+    var freezeWhy = live.on ? (dirty
+      ? 'Save the draft first - ' + dirty + ' edited value'
+        + (dirty === 1 ? '' : 's') + '.'
+      : (act.freeze_brief || {}).reason) : (act.freeze_brief || {}).reason;
+
+    actionBtn('Save draft', canSave, saveWhy, function () {
+      post('/api/brief', { values: live.dirty }).then(function (out) {
+        live.dirty = {};
+        applyView(out.view);
+        note((out.warnings || []).join(' ') || 'Draft saved.',
+             (out.warnings || []).length ? 'warn' : 'ok');
+      }).catch(function (e) { note('Save failed: ' + e.message, 'bad'); });
     });
+    actionBtn('Freeze brief', canFreeze, freezeWhy, function () {
+      post('/api/brief/freeze', { values: currentValues() }).then(function (out) {
+        live.dirty = {};
+        applyView(out.view);
+        note(out.ok
+          ? 'Brief frozen: revision ' + out.revision + ' \u2192 ' + out.definition
+            + ((out.warnings || []).length ? '  |  ' + out.warnings.join(' ') : '')
+          : 'Freeze refused: ' + JSON.stringify(out.field_errors || {}),
+          out.ok ? ((out.warnings || []).length ? 'warn' : 'ok') : 'bad');
+      }).catch(function (e) { note('Freeze failed: ' + e.message, 'bad'); });
+    }, true);
     b.body.appendChild(acts);
-    // reserved area (decision: run progress is polled from logs.jsonl in M4)
-    b.body.appendChild(h('div', { class: 'placeholder', style: 'margin-top:10px',
-      text: 'Run progress \u2014 reserved. M4 will stream logs.jsonl here while a run '
-            + 'is in flight.' }));
+    b.body.appendChild(runBox());
     return b.root;
+  }
+
+  // ------------------------------------------------------------ run + BEM loop
+  function currentValues() {
+    var out = {};
+    (view.questions || []).forEach(function (q) {
+      (q.fields || []).forEach(function (f) {
+        if (f.accepted) { out[f.key] = f.value; }
+      });
+    });
+    for (var k in live.dirty) { out[k] = live.dirty[k]; }
+    return out;
+  }
+
+  function runBox() {
+    var lv = view.live || {};
+    var box = h('div', { class: 'run-box' });
+    var frozen = (view.brief_draft || {}).definition;
+    var state = lv.state || 'idle';
+    var cls = state === 'failed' ? 'failed' : state === 'done' ? 'passed'
+      : state === 'running' ? 'running' : '';
+
+    var row = h('div', { class: 'run-row' }, [
+      h('span', { class: 'chip ' + cls, text: state })
+    ]);
+    if (lv.stage) { row.appendChild(h('span', { class: 'muted', text: '\u00b7 ' + lv.stage })); }
+    if (lv.definition) {
+      row.appendChild(h('span', { class: 'muted kick', text: lv.definition }));
+    }
+    box.appendChild(row);
+
+    if (live.on && lv.stages_total) {
+      var bar = h('div', { class: 'pbar', role: 'progressbar',
+                           'aria-valuenow': String(lv.percent || 0),
+                           'aria-valuemin': '0', 'aria-valuemax': '100' });
+      bar.appendChild(h('div', { class: 'pfill',
+                                 style: 'width:' + (lv.percent || 0) + '%' }));
+      box.appendChild(bar);
+      box.appendChild(h('div', { class: 'muted',
+        text: (lv.stages_passed || 0) + ' of ' + lv.stages_total + ' stages passed'
+              + '  (' + (lv.percent || 0) + '%)' }));
+    }
+    if (lv.error) {
+      box.appendChild(h('div', { class: 'locked-why failed', text: lv.error }));
+    }
+    var tail = (lv.messages || []).slice(-6);
+    if (live.on && tail.length) {
+      box.appendChild(h('pre', { class: 'cmd', text: tail.join('\n') }));
+    }
+
+    if (!live.on) {
+      box.appendChild(h('div', { class: 'placeholder',
+        text: 'Read-only snapshot - there is no server to act on. Start the local '
+              + 'host:  python3 -m hornflow.app --run-dir <run dir>' }));
+      return box;
+    }
+
+    var btns = h('div', { class: 'run-btns' });
+    var canRun = !!frozen && state !== 'running';
+    var why = !frozen ? 'Freeze a brief first - a run needs a definition file.'
+      : state === 'running' ? 'A run is already in flight.'
+      : 'Starts a new, immutable run from the frozen definition.';
+    var run = h('button', { class: 'btn primary', type: 'button', title: why,
+                            text: 'Start run' });
+    if (!canRun) { run.setAttribute('disabled', 'disabled'); }
+    run.addEventListener('click', function () {
+      note('Run started\u2026', 'ok');
+      post('/api/run', {}).then(function () {
+        poll(true);
+      }).catch(function (e) { note('Run failed to start: ' + e.message, 'bad'); });
+    });
+    btns.appendChild(run);
+
+    if ((view.manual_bem || {}).available) {
+      var imp = h('button', { class: 'btn', type: 'button',
+                              text: 'Import & validate (.vips)',
+                              title: 'Validates the exported .vips spectra and '
+                                     + 'compares them with the 1-D reference.' });
+      imp.addEventListener('click', function () {
+        post('/api/import', {}).then(function (out) {
+          applyView(out.view);
+          note(out.ok ? 'Imported and compared: BEM_VALIDATED'
+                      : 'Imported: BEM_REJECTED - the difference is over tolerance',
+               out.ok ? 'ok' : 'warn');
+        }).catch(function (e) { note('Import failed: ' + e.message, 'bad'); });
+      });
+      btns.appendChild(imp);
+    }
+
+    if ((view.outcome || {}).verdict === 'BEM_REJECTED') {
+      var sel = h('select', { class: 'finput', id: 'acc-reason',
+                              'aria-label': 'reason for accepting unvalidated' });
+      (view.accept_reasons || []).forEach(function (r) {
+        sel.appendChild(h('option', { value: r }, [r]));
+      });
+      var acc = h('button', { class: 'btn', type: 'button',
+                              text: 'Accept as unvalidated',
+                              title: 'Records a decision. It does NOT validate the '
+                                     + 'acoustic result.' });
+      acc.addEventListener('click', function () {
+        post('/api/decision', { kind: 'accept_unvalidated', reason: sel.value })
+          .then(function (out) {
+            applyView(out.view);
+            note('Decision recorded. The acoustic result stays unvalidated.', 'warn');
+          }).catch(function (e) { note('Decision failed: ' + e.message, 'bad'); });
+      });
+      btns.appendChild(sel);
+      btns.appendChild(acc);
+    }
+    box.appendChild(btns);
+    box.appendChild(h('div', { class: 'muted', style: 'margin-top:4px',
+      text: 'Start run calls the pipeline in this process - no shell, and no command '
+            + 'built from the page.' }));
+    return box;
   }
 
   // Everything below is READ FROM view.completion / view.questions.  The browser
@@ -279,16 +480,51 @@
     var val = isSet ? (fmt(f.value, 3) + (f.unit ? ' ' + f.unit : ''))
                     : (f.required ? 'Required' : 'Optional');
     var wrap = h('div', { class: 'field' + (f.required && !isSet ? ' needs' : '') });
-    wrap.appendChild(h('div', { class: 'fline' }, [
-      h('span', { class: 'fl', text: f.label,
-                  title: f.key + (f.help ? ' \u2014 ' + f.help : '') }),
-      h('span', { class: 'fv' + (isSet ? '' : ' unknown'), text: val })
-    ]));
+    var current = live.on && (f.key in live.dirty) ? live.dirty[f.key] : f.value;
+
+    if (live.on) {
+      // one clear control per field; the unit is shown once, after the value
+      var attrs = { class: 'finput', name: f.key, id: 'f-' + f.key,
+                    'aria-label': f.label };
+      var control;
+      if (f.enum) {
+        control = h('select', attrs);
+        if (!f.required) { control.appendChild(h('option', { value: '' }, ['(none)'])); }
+        f.enum.forEach(function (opt) {
+          var o = h('option', { value: opt }, [opt]);
+          if (String(current) === opt) { o.selected = true; }
+          control.appendChild(o);
+        });
+        if (f.required && current === null) { control.selectedIndex = -1; }
+      } else {
+        attrs.type = (f.type === 'number') ? 'number' : 'text';
+        attrs.step = 'any';
+        attrs.value = (current === null || current === undefined) ? '' : current;
+        if (f.required) { attrs.required = 'required'; }
+        control = h('input', attrs);
+      }
+      control.addEventListener('change', function () {
+        setField(f.key, control.value, f.type === 'number');
+      });
+      wrap.appendChild(h('div', { class: 'fline' }, [
+        h('label', { class: 'fl', for: 'f-' + f.key, text: f.label,
+                     title: f.key + (f.help ? ' \u2014 ' + f.help : '') }),
+        control,
+        f.unit ? h('span', { class: 'funit muted', text: f.unit }) : null
+      ]));
+    } else {
+      wrap.appendChild(h('div', { class: 'fline' }, [
+        h('span', { class: 'fl', text: f.label,
+                    title: f.key + (f.help ? ' \u2014 ' + f.help : '') }),
+        h('span', { class: 'fv' + (isSet ? '' : ' unknown'), text: val })
+      ]));
+    }
+
     var meta = [f.required ? 'required' : 'optional'];
     if (isSet) { meta.push('answered'); }
     if (f.provenance) { meta.push(String(f.provenance).toLowerCase()); }
     if (f.source) { meta.push('from ' + String(f.source).replace('_', ' ')); }
-    if (f.enum) { meta.push('one of: ' + f.enum.join(' / ')); }
+    if (f.enum && !live.on) { meta.push('one of: ' + f.enum.join(' / ')); }
     wrap.appendChild(h('div', { class: 'fmeta muted', text: meta.join(' \u00b7 ') }));
     if (f.help && !isSet) {
       wrap.appendChild(h('div', { class: 'fhelp muted', text: f.help }));
@@ -339,6 +575,11 @@
       frag.appendChild(h('div', { class: 'locked-why' }, [
         h('strong', { text: 'Locked \u2014 ' }),
         h('span', { text: stage.locked_reason || 'an earlier stage is unfinished.' })
+      ]));
+    }
+    if (stage.note) {
+      frag.appendChild(h('div', { class: 'locked-why' }, [
+        h('strong', { text: 'Outstanding \u2014 ' }), h('span', { text: stage.note })
       ]));
     }
     if (stage.gate_failed && stage.gate_failed.length) {
@@ -846,11 +1087,60 @@
     })();
   }
 
+  // ------------------------------------------------------------- live wiring
+  function applyView(v) {
+    if (!v || !v.view_schema) { return; }
+    view = v;
+    var saved = store('hornflow.tab');
+    renderStrip();
+    renderWorkflow();
+    renderResults();
+    if (saved) { activate(saved); }
+  }
+
+  function poll(force) {
+    if (!live.on) { return; }
+    fetch('/api/progress').then(function (r) {
+      return r.ok ? r.json() : null;
+    }).then(function (p) {
+      if (!p) { return; }
+      var before = (view.live || {}).state;
+      view.live = p;
+      if (live.poll) { window.clearTimeout(live.poll); }
+      live.poll = window.setTimeout(poll, (p.state === 'running') ? 1000 : 2500);
+      // a finished run changes the whole model, so re-read it once
+      if (p.state !== before && (p.state === 'done' || p.state === 'failed')) {
+        fetch('/api/view').then(function (r) { return r.ok ? r.json() : null; })
+          .then(function (v) { if (v) { applyView(v); } });
+        return;
+      }
+      if (force || p.state === 'running') { refreshActions(); }
+    }).catch(function () { /* the host went away; stay on the snapshot */ });
+  }
+
+  function bootLive() {
+    if (!window.fetch) { return; }
+    fetch('/api/view').then(function (r) {
+      return r.ok ? r.json() : null;
+    }).then(function (v) {
+      if (!v || !v.view_schema || v.host !== 'local') { return; }
+      live.on = true;
+      live.dirty = {};
+      note('Local host connected \u2014 the actions on this page are live.', 'ok');
+      applyView(v);
+      poll();
+    }).catch(function () {
+      log('no local host: staying on the embedded read-only snapshot');
+    });
+  }
+
   // ---------------------------------------------------------------- go
   renderStrip();
   renderWorkflow();
   renderResults();
   activate(defaultTab());
   wireDimensions();
+  bootLive();
 })();
+
 
