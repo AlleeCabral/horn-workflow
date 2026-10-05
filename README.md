@@ -124,19 +124,19 @@ import *plus* comparison has run**; the state machine
 → VIPS_IMPORTED → BEM_COMPARISON_COMPLETED → BEM_VALIDATED | BEM_REJECTED`) is
 recorded in `state.json` and `bem_manual_report.md`.
 
-### The local UI: three tabs, one file (M1–M3)
+### The local UI: three tabs, and a host that acts (M1–M4)
 
 Every run now writes a small **single-page app** beside the report. It is the same
-offline viewer, extended with a tab strip — no server, no accounts, no build step,
-no new dependency:
+offline viewer, extended with a tab strip — no accounts, no build step, no new
+dependency:
 
 | tab | what it is |
 |---|---|
 | **Viewer** | the geometry, unchanged, plus a `Dimensions` overlay (default **m**, `mm` toggle) |
-| **Workflow** | a persistent current-state summary, then the nine process stages as **accessible accordions** — each showing its own answers and gates, with the current stage open by default. Locked stages stay visible, collapsed, with the reason. Includes the manual AKABAK checkpoint, the `.vips` import panel, the validation outcome and the rerun panel. Everything is read from the model: the browser never computes completion. |
+| **Workflow** | a persistent current-state summary, then the nine process stages as **accessible accordions** — each showing its own answers and gates, with the current stage open by default. Locked stages stay visible, collapsed, with the reason. Includes the manual AKABAK checkpoint, the `.vips` import panel, the validation outcome and the run panel. Everything is read from the model: the browser never computes completion. |
 | **Results** | a labelled placeholder for the next milestone |
 
-Screenshots of the redesign (and of the tab it replaced) are in
+Screenshots of the redesign, of the tab it replaced, and of the live host are in
 [`docs/ui/`](docs/ui/README.md); regenerate them with `tools/shoot_ui.sh <run_dir>`.
 
 The nine Workflow stages are: Project and deployment · Driver and provenance ·
@@ -145,17 +145,50 @@ Architecture selection · Acoustic and folded design · Verification and AKABAK 
 Final decision.
 
 ```bash
+# the pipeline, as before
 python3 run_pipeline.py params/horn_jbl_1200b.yaml --out runs
-# open the newest run's UI (offline; the GLB is embedded, so file:// works)
-firefox runs/<run_id>/deliverables/viewer/viewer.html
-# or over http (recommended - no browser file:// restrictions)
-python3 -m http.server 8765 --directory runs/<run_id>/deliverables
 
-# refresh the UI of a run that already exists (e.g. after --bem-import),
-# without re-running the pipeline and without touching state.json:
-python3 -m hornflow.cli params/horn_jbl_1200b.yaml --out runs --emit-ui [RUN_DIR]
+# the app, with a live host: editable brief, real Start run, real import
+python3 -m hornflow.app --run-dir runs/<run_id>          # newest run if omitted
+python3 -m hornflow.app --base params/horn_jbl_1200b.yaml --open   # no run yet
+
+# the same page, read-only, offline (the GLB is embedded, so file:// works)
+firefox runs/<run_id>/deliverables/viewer/viewer.html
+# or over plain http
+python3 -m http.server 8765 --directory runs/<run_id>/deliverables
 ```
 
+The host binds `127.0.0.1` only. Opening the page from disk without a server
+degrades exactly as before: the Viewer renders, the Workflow tab renders read-only,
+and every mutating action is replaced by a *Copy command* button.
+
+| endpoint | what it does |
+|---|---|
+| `GET /api/health` | liveness and the project root |
+| `GET /api/view` | the same view model the page embeds, plus `live`, `definitions`, `runs`, `brief_draft`, `brief_actions` |
+| `GET /api/progress` | structured run progress (lock, current stage, pass counts, log tail) — the browser never parses `logs.jsonl` |
+| `GET /api/definitions` | the allow-list of definition files a run may use |
+| `GET /api/runs` | runs on disk and the current one |
+| `POST /api/brief` | validate and save the draft brief (per-field errors, never a crash) |
+| `POST /api/brief/freeze` | require every hard-required answer, write the definition, **prove it loads** with the real `config.load()`, record revision + input hash |
+| `POST /api/run` | run `run_pipeline()` **in this process** (no shell, no command from the page); one-run lock; returns immediately and mints a new immutable run id |
+| `POST /api/import` | validate + compare a `.vips` export via `bem_import.import_into_run()`, enforcing every existing hard check |
+| `POST /api/decision` | record a structured `decision_log` entry (`accept_unvalidated` needs a fixed reason, and a note for *Other*) |
+| `POST /api/select` | switch the current run by **name** |
+
+An API request can name a *definition*, a *run id* or an *export sub-directory* —
+never a path. Every name is resolved through `safe_under()`, which refuses absolute
+paths, `..`, `~` and symlink escapes, and all reads and writes stay under the
+project root. Errors come back structured; a traceback never reaches the page and
+the server log keeps the detail.
+
+The page renders a **HornFlow-emitted view model**
+(`deliverables/viewer/app_view.json`, also embedded in the HTML):
+`hornflow/app/view.py` derives it from `state.json`, the frozen brief, `logs.jsonl`,
+the BEM manifest and the export folder. The browser still never computes an acoustic
+result and never writes `state.json` — `POST /api/decision` is the only endpoint that
+writes run state, and it appends a decision rather than touching a measurement.
+Every run made before this change still opens as a plain viewer.
 The page renders a **HornFlow-emitted view model** (`deliverables/viewer/app_view.json`,
 also embedded in the HTML): `hornflow/app/view.py` derives it from `state.json`,
 `logs.jsonl`, the BEM manifest and the export folder. The UI never reads `state.json`

@@ -159,28 +159,35 @@ Key facts to know:
    lanes; **5** two-candidate viewer comparison; **6** fold risk (the chosen U-fold
    is flagged ~290° path skew at 200 Hz); **7** one real JBL run end to end.
 1. Read `docs/migration-notes.md`, then run the pipeline and read the report.
-2. **Open the local UI** (M1–M3, local-first, no Jira):
-   `python3 run_pipeline.py params/horn_jbl_1200b.yaml --out runs` then
-   `firefox runs/<run_id>/deliverables/viewer/viewer.html`
-   (or over http: `python3 -m http.server 8765 --directory runs/<run_id>/deliverables`).
-   Three tabs: **Viewer** (geometry + a `Dimensions` overlay, default metres),
-   **Workflow** (gates, current state, the five questions, the single next action,
-   the manual AKABAK checkpoint, the `.vips` import panel, the validation outcome,
-   rerun) and **Results** (placeholder). Everything is read-only in this milestone:
-   state-changing buttons are disabled with a reason and paired with a
-   `Copy command`. Re-render an existing run with
-   `python3 -m hornflow.cli params/horn_jbl_1200b.yaml --out runs --emit-ui [RUN_DIR]`.
-3. Milestone next: improve the chosen fold (the U-fold bend is flagged high-risk
-   at 200 Hz — a J-fold or a gentler radius is the likely winner), then run the
-   generated BEM inputs in AKABAK.
-4. Manual BEM loop, now supported end to end:
+2. **Run the app** (M1–M4, local-first, no Jira):
+   `python3 -m hornflow.app --run-dir runs/<run_id>` (or, with no run yet,
+   `python3 -m hornflow.app --base params/horn_jbl_1200b.yaml --open`).
+   It binds `127.0.0.1` only. Three tabs: **Viewer** (geometry + a `Dimensions`
+   overlay, default metres), **Workflow** (nine accordion stages, the current state,
+   the single next action, the manual AKABAK checkpoint, the `.vips` import panel,
+   the validation outcome, the run box) and **Results** (placeholder).
+   Editable fields, `Save draft`, `Freeze brief`, `Start run`,
+   `Import & validate (.vips)` and `Accept as unvalidated` are **live** in this mode;
+   opened from disk without a server the same page is a read-only snapshot and every
+   mutating action becomes a `Copy command`.
+3. A brief can now be answered entirely in the UI:
+   five groups -> `Save draft` -> `Freeze brief` (writes
+   `.hornflow/generated/<slug>.yaml`, *verified with the real `config.load()`*) ->
+   `Start run` -> the pipeline runs in-process. **Verified on the real JBL project
+   on 2026-10-05**: 20/20 answers, 15/16 gates, run
+   `run_20261005T081734+0000_39db2c`, then the honest stop at `GUI_REQUIRED` with
+   "Copy AKABAK checklist" as the next action.
+4. Milestone next: **Phase 4 — the architecture tournament** (three recommendation
+   lanes; a tapped horn needs a validated model before it may win), then **Phase 6 —
+   fold risk** (the U-fold bend is flagged high-risk at 200 Hz), then **Phase 5 — the
+   two-candidate Viewer comparison** and the Results tab.
+5. Manual BEM loop, now supported end to end (from the UI, or from the CLI):
    `python3 -m hornflow.cli params/horn_jbl_1200b.yaml --out runs` generates the
    inputs + manifest + checklist; after the GUI solve, export the `.vips` into
    `runs/<run_id>/deliverables/bem/export/` and run
-   `python3 -m hornflow.cli params/horn_jbl_1200b.yaml --bem-import <that dir>`.
-   The importer picks the point-mic curve, removes the +3.01 dB peak convention
-   and reports the difference; `--bem-tolerance-db N` sets the validated threshold.
-   Then `--emit-ui` refreshes the UI so the Workflow tab shows the new outcome.
-5. After that: **M4** (the local host: `POST /api/brief|run|import|decision`, so the
-   buttons actually mutate state) and **M5** (the Results tab contents).
+   `python3 -m hornflow.cli params/horn_jbl_1200b.yaml --bem-import <that dir>`
+   (or press `Import & validate (.vips)` in the app). The importer picks the
+   point-mic curve, removes the +3.01 dB peak convention and reports the difference;
+   `--bem-tolerance-db N` sets the validated threshold, and the tolerance is never
+   changed silently.
 

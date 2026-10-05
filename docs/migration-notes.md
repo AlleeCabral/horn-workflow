@@ -228,6 +228,36 @@ whose `viewer.html` predates 1.2 simply renders the nine-stage tab as a labelled
 "this page has no workflow stages" message with the re-render command; regenerate
 it with `--emit-ui` and it picks up the new schema.
 
+### view_schema 1.2 -> 1.3 (the local host and the manual loop)
+
+1.3 adds to `app_view.json`: per-stage `manual_open` and `note` (an open manual BEM
+loop keeps *Verification and AKABAK* `in_progress` - ADR-0015), `accept_reasons`,
+and, when the page is served by the local host, `live`, `definitions`, `runs`,
+`brief_draft` and `brief_actions`. The same renderer handles both: a snapshot simply
+has `host: "snapshot"` and no `live` block, and every mutating action degrades to a
+copyable command.
+
+### The brief: new local files, deliberately outside the repo
+
+M4 introduces three files, all under the git-ignored `.hornflow/` directory:
+
+| file | what it holds |
+|---|---|
+| `.hornflow/brief.draft.yaml` | the editable draft (what the user has typed) |
+| `.hornflow/brief.yaml` | the frozen record: revision, `input_hash`, timestamp, author, what it applied, its warnings and its limits |
+| `.hornflow/generated/<slug>.yaml` | the definition file a run loads |
+
+The generated definition is a **copy of an existing definition with a `brief:` block
+added**, so `config.py` and the pipeline are unchanged and `python3 run_workflow.py
+.hornflow/generated/<slug>.yaml` works directly. `freeze()` writes it to a staging
+name, runs the real `config.load()` on it, and only then renames it into place: a
+freeze that would produce an unloadable definition is refused and leaves nothing
+behind. `draft()` overlays the draft on the frozen record, so after a freeze the
+current brief is still visible without re-typing it.
+
+Nothing here reinterprets an existing project: a project with no `.hornflow/` has an
+empty brief, and the pipeline path is untouched.
+
 ### Deliberate baseline regeneration (once)
 
 `tests/fixtures/baseline/{manifest.json,jbl_1200b_curves.csv}` were regenerated for

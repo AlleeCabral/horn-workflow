@@ -471,6 +471,69 @@ tests that skip cleanly where no browser exists).
 The local host (M4) is still to come, so every state-changing button remains
 disabled with a reason and a `Copy command`; the Results tab is still a placeholder.
 
+## 2026-10-05 — Phase 3: the local host (M4), and the manual loop closes the stage model
+
+The Workflow tab's buttons are now real. `python3 -m hornflow.app --run-dir
+runs/<id>` starts a standard-library `ThreadingHTTPServer` on `127.0.0.1` that
+serves the same page (live, this time) and exposes the action surface as JSON.
+Without a server the page is byte-for-byte the M3 snapshot, so nothing regresses.
+
+### What was added
+
+| module | role |
+|---|---|
+| `hornflow/app/brief.py` | the draft/frozen brief, per-field validation, driver resolution, and `freeze()` - which writes a definition, **proves it loads with the real `config.load()`**, and only then keeps it |
+| `hornflow/app/actions.py` | the whole action surface as plain Python (`ApiError`, `safe_under`, `AppActions`), so it is testable with no socket |
+| `hornflow/app/server.py` | routing + serialisation only; static files; `127.0.0.1` by default |
+| `hornflow/app/__main__.py` | `python3 -m hornflow.app [--run-dir\|--base] [--open]` |
+
+### The decisions that mattered
+
+* **In-process, not a subprocess.** `POST /api/run` calls `run_pipeline()` directly
+  and `POST /api/import` calls `bem_import.import_into_run()` directly, so every
+  existing hard check still applies and no command is ever built from page input.
+* **A request never names a path.** It names a *definition*, a *run id* or an
+  *export sub-directory*; `safe_under()` rejects absolute names, `..`, `~` anywhere
+  and re-checks containment after `resolve()` so a symlink cannot escape.
+* **The brief cannot break the pipeline.** `freeze()` stages the file, runs the real
+  loader on it, and refuses (leaving nothing behind) if it would not load.
+* **One run lock.** A non-blocking `threading.Lock`; a second concurrent run gets
+  `409 run_in_progress` with an actionable message.
+* **`draft()` is the draft overlaid on the frozen record**, so a frozen brief stays
+  visible without re-typing it, and `Save draft` is offered only while the draft
+  actually differs from the frozen revision.
+
+### Three real bugs the phase exposed (and fixed)
+
+1. A run that failed early left the app pointing at a directory with no
+   `state.json`; the new run is now adopted only once its state exists.
+2. The static document root was fixed at startup, so after a run the host still
+   served the *previous* run's page. It is resolved per request now.
+3. **The real run reported all nine stages complete while the `.vips` exports had
+   not been imported.** An open manual BEM loop now keeps *Verification and AKABAK*
+   `in_progress` with an explicit note; `BEM_VALIDATED` and `BEM_REJECTED` both close
+   it (ADR-0015).
+
+### The vertical slice, on the real project
+
+`POST /api/brief` -> `POST /api/brief/freeze` (rev 2,
+`.hornflow/generated/club_subwoofer_corner.yaml`, input hash `a970aa29…`) ->
+`POST /api/run` -> **run_20261005T081734+0000_39db2c**, 15 of 16 gates, 94% ->
+`GUI_REQUIRED`, next action *Copy AKABAK checklist*. `report.md` and the viewer were
+written. The page shows 20/20 answers, 8 of 9 stages complete, and the exact manual
+command. Screenshots: `docs/ui/workflow-live-{375,1440}px.png`.
+
+### Tests
+
+legacy **147/147**; pytest **185 → 232 passed** (new `tests/test_app_api.py`, 45
+tests: the path guard including a symlink escape, the brief store, freeze-then-load,
+the one-run lock, a failing runner that reports instead of raising, decisions, and 15
+tests over a real `ThreadingHTTPServer` on an ephemeral port - traversal, oversized
+bodies, malformed JSON, and a 500 that leaks no traceback). Two Phase-2 tests were
+updated where the behaviour legitimately changed: the static-host `Save draft` reason
+now names the command that can write, and a snapshot's `Freeze brief` can never be
+enabled however complete the brief is.
+
 # CURRENT STATE
 
 **Model (GUI, `~/AI projects/horn design/Saved/`):**
@@ -525,8 +588,13 @@ fully validated. If the horn will be built **into a wall or corner**, the IB is 
    importer. Remaining: run the infinite-baffle re-solve (see NEXT STEP) so the
    −8.7 dB offset closes and the folded candidate can be `BEM_VALIDATED` at the
    default tolerance.
-2. `excursion_peak_mm` in `curves.csv` is rms (mislabelled) → rename to `excursion_rms_mm` or
-   ×√2; also affects the X_max statements in the report.
+2. ~~`excursion_peak_mm` in `curves.csv` is rms (mislabelled)~~ **DONE (2026-10-04)**:
+   the values were proven rms from the generating calculation, `curves.csv` is at v2
+   with `excursion_rms_mm` + a derived `excursion_peak_mm`, the Xmax comparison is
+   like-for-like and the report states one-way/peak-to-peak *and* rms/peak explicitly.
+   **Still needs the user:** confirm the 1200B's 11.35 mm is one-way peak (it is
+   assumed so). If the data sheet means peak-to-peak, set `Xmax_convention` in the
+   driver YAML and the margins tighten accordingly.
 3. Optional: `Mic Field (Mesh File)` with the **`interface`** tag → colour map painted *on the
    mouth plane* (no gap, by construction); use `Edge Length 0.1 m` there (→ trustworthy to 1715 Hz).
 4. Optional: `--to-csv` / `--plot-field` converters so exported curves/fields can be plotted
@@ -534,6 +602,12 @@ fully validated. If the horn will be built **into a wall or corner**, the IB is 
 5. Optional: a `--bem-import` golden test against a stored `.vips` pair is in place
    (`tests/test_bem_manual.py`); further coverage could add a stored *current-project*
    `.vips` snapshot once the IB re-solve is done.
+6. **Phase 4 (architecture tournament) is next**: only sealed, reflex, front-loaded
+   horn and folded horn have real models; a tapped horn must not be allowed to win
+   until it has a validated model compared against a reference case.
+7. The chosen U-fold's bend is still flagged high-risk (~290° phase skew at 200 Hz) -
+   Phase 6 must compare it against a gentler radius, the J-fold and a compact winner.
+
 
 # DEFERRED RESEARCH — *read later, do not run now*
 * **ATH4 thread / horn-design simulator knowledge base**

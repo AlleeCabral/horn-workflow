@@ -148,9 +148,84 @@ header and the added peak column changed. `docs/migration-notes.md` records it.
 
 **Validation.** `tests/test_excursion_convention.py` (27 tests) proves the rms
 convention from the generating calculation, asserts `peak = √2·rms`, checks the v1
-migration, and includes a gate test where a driver whose rms travel fits but whose
+migration, and includes a gate test in which a driver whose rms travel fits but
+whose peak travel does not must fail.
 
 ---
+
+## ADR-0014 — M4: a local, in-process host is the only thing that may act
+
+**Problem.** M3's buttons were inert: they explained why they were disabled and offered
+a copyable command. The next step had to make them real without (a) adding a
+dependency, (b) letting the browser compute anything, (c) letting a request name a
+filesystem path, and (d) creating a second source of truth for run state.
+
+**Alternatives.** (a) A web framework (Flask/FastAPI) — a dependency, and no benefit
+over `http.server` at this size. (b) Shelling out to the CLI from the page — a command
+string built from user input, i.e. the exact injection surface to avoid. (c) A queue
+and worker process (Redis/Celery) — a service, explicitly out of scope for v0.
+(d) A stdlib `ThreadingHTTPServer` that calls the pipeline and the import **in this
+process**, behind a one-run lock.
+
+**Decision.** (d). `hornflow/app/actions.py` is the whole action surface as plain
+Python (`ApiError` for structured failures, else normal returns), so it is testable
+with no socket; `hornflow/app/server.py` only routes and serialises. `POST /api/run`
+calls `run_pipeline()` directly. `POST /api/import` calls
+`bem_import.import_into_run()` directly, so every existing hard check still applies.
+One `threading.Lock` with a non-blocking acquire is the run lock; a second concurrent
+request gets `409 run_in_progress`. Progress is assembled server-side from the
+pipeline's own callback and `state.json` — the browser never parses `logs.jsonl`.
+
+**The path rule.** A request may name a *definition*, a *run id* or an *export
+sub-directory*, never a path. `safe_under(root, *parts)` rejects absolute names, `..`,
+`~` anywhere in the name, and re-checks containment after `resolve()`, so a symlink
+cannot escape either. `POST /api/brief/freeze` does not write a definition and hope:
+it writes to a staging file, runs the **real `config.load()`** on it, and only then
+keeps it — so a frozen brief can never produce a definition the pipeline would
+reject. Internal faults return a fixed JSON message; the traceback stays in the
+server log.
+
+**Consequences.** `python3 -m hornflow.app --run-dir runs/<id>` is the whole setup,
+on `127.0.0.1` only. Without a server the page is byte-for-byte the M3 snapshot, so
+`file://` use is unchanged. The brief lives in `.hornflow/` (git-ignored) as a draft,
+a frozen record with revision + input hash, and the generated definition under
+`params/generated/` conventions — `config.py` and the pipeline are untouched. A
+failed early run no longer leaves the app pointing at a directory that does not
+exist (the new run is adopted only once it has a `state.json`).
+
+**Validation.** `tests/test_app_api.py` (45 tests): the path guard (including a
+symlink escape), the brief store, freeze-then-`config.load()`, the one-run lock, a
+reporting-not-raising failing runner, decisions (fixed reasons, note for *Other*, and
+that accepting unvalidated **cannot** overwrite `BEM_VALIDATED` and never touches the
+measured checks), and 15 tests over a real `ThreadingHTTPServer` on an ephemeral port
+including traversal, oversized bodies, malformed JSON and a 500 that leaks nothing.
+
+---
+
+## ADR-0015 — an open manual BEM loop keeps verification unfinished
+
+**Problem.** The real JBL run driven through the M4 host reported all nine Workflow
+stages `complete` — including *Verification and AKABAK* — while the `.vips` exports had
+not been imported and `bem_state` was still `GUI_REQUIRED`.
+
+**Alternatives.** (a) Leave it to the user to notice the BEM chip. (b) Treat the
+manual loop as a tenth pipeline gate. (c) Feed the manual-BEM state into the stage
+model so the verification stage is incomplete while the loop is open.
+
+**Decision.** (c), with a narrow rule: while `bem_state` is one of the *open* manual
+states, the stage that owns `THREE_DIMENSIONAL_VERIFICATION` is `in_progress` with an
+explicit note naming the next human action — even though every gate it owns has
+`passed` or been deliberately `skipped`. `BEM_VALIDATED` and `BEM_REJECTED` both close
+it: a rejection is a decision made honestly, not an unfinished stage.
+
+**Consequences.** The stage model now cannot disagree with the manual state machine,
+which remains authoritative for `BEM_VALIDATED`. The real run reads `8 of 9` with
+"Verification and AKABAK" open and highlighted, and the next action is
+*Copy AKABAK checklist*.
+
+**Validation.** `tests/test_workflow_ui.py::test_the_manual_bem_step_keeps_verification_unfinished`
+covers open → validated → rejected.
+
 
 ## ADR-0013 — the Workflow tab is nine progressive stages, not a wall of bands
 

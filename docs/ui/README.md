@@ -10,6 +10,12 @@
 | `workflow-before-1440px.png` | 1440 px | the same, wide: every group expanded at once |
 | `workflow-after-375px.png` | 375 px | summary + nine collapsed stages, the current one open, one column, nothing clipped |
 | `workflow-after-1440px.png` | 1440 px | the same, wide: two-column field grid, "report only / complete" engineering stages collapsed |
+| `workflow-live-375px.png` | 375 px | **M4**: the same page served by `python3 -m hornflow.app` and connected to a live host — editable fields, the run box, the real manual-BEM checkpoint |
+| `workflow-live-1440px.png` | 1440 px | the same, wide: a frozen brief (20/20 answers), 15/16 gates passed, `GUI_REQUIRED`, next action "Copy AKABAK checklist" with the exact command |
+
+The `-live-` pair is the vertical slice of Phase 3: the brief was frozen over
+`POST /api/brief/freeze` and the run started over `POST /api/run`, and the page shows
+the resulting state read back from disk.
 
 ## Regenerating
 
