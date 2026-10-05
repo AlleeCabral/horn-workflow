@@ -24,6 +24,7 @@ from pathlib import Path
 import numpy as np
 
 from . import config, response
+from .domain.excursion import RMS_TO_PEAK as _RMS_TO_PEAK
 
 
 # ---------------------------------------------------------------------------
@@ -152,7 +153,9 @@ def _metrics(params, result) -> dict:
         "spl_variation_db": result.variations_db(t.f_low, t.f_high),
         "ze_min_ohm": float(np.abs(result.Ze).min()),
         "ze_max_ohm": float(np.abs(result.Ze).max()),
-        "excursion_max_mm": float(np.max(np.abs(result.excursion)) * 1e3),
+        # both conventions, named explicitly - see hornflow.domain.excursion
+        "excursion_rms_mm": float(np.max(np.abs(result.excursion)) * 1e3),
+        "excursion_peak_mm": float(np.max(np.abs(result.excursion)) * _RMS_TO_PEAK * 1e3),
     }
 
 
@@ -220,7 +223,8 @@ def run(path, targets: list | None = None, depth_limit: float = 1500.0,
 # ---------------------------------------------------------------------------
 CSV_KEYS = ["fc_hz", "k_rm", "mouth_area_cm2", "mouth_width_mm", "mouth_height_mm",
             "depth_mm", "envelope_m3", "air_volume_l", "area_ratio", "spl_mean_db",
-            "spl_variation_db", "ze_min_ohm", "ze_max_ohm", "excursion_max_mm"]
+            "spl_variation_db", "ze_min_ohm", "ze_max_ohm",
+            "excursion_rms_mm", "excursion_peak_mm"]
 
 
 def write_csv(data: dict, path: Path) -> Path:
@@ -335,8 +339,9 @@ def _report_part2(data: dict, path: Path, md: list, base, drv, ref, best,
             md.append(f"| {f0:.0f} Hz | {direct:.1f} dB | {horn:.1f} dB | {gain:+.1f} dB |")
         md += ["",
                f"Reference (direct radiator) in-band: {ref['metrics']['spl_mean_db']:.1f} dB mean, "
-               f"{ref['metrics']['spl_variation_db']:.1f} dB variation, excursion peak "
-               f"{ref['metrics']['excursion_max_mm']:.2f} mm.",
+               f"{ref['metrics']['spl_variation_db']:.1f} dB variation, excursion "
+               f"{ref['metrics']['excursion_rms_mm']:.2f} mm rms / "
+               f"{ref['metrics']['excursion_peak_mm']:.2f} mm peak.",
                "",
                f"That is the trade in one line: without the horn the same driver in the same "
                f"chamber is flatter ({ref['metrics']['spl_variation_db']:.1f} dB) but about "
@@ -344,20 +349,26 @@ def _report_part2(data: dict, path: Path, md: list, base, drv, ref, best,
                f"The horn buys that output (and less cone travel); the remaining ripple can be "
                f"equalised."]
 
+        v0 = float(data["base"].simulation.voltage)
+        re = float(data["base"].driver.Re)
+        k100 = math.sqrt(100.0 * re) / v0 if v0 > 0 else float("nan")
         md += ["", "## Predicted performance of the fitting designs", "",
-               "| design | mean SPL | variation | excursion peak | at 100 W | impedance | "
-               "air volume |",
-               "| --- | --- | --- | --- | --- | --- | --- |"]
+               "| design | mean SPL | variation | excursion rms | excursion peak | "
+               "peak at 100 W | impedance | air volume |",
+               "| --- | --- | --- | --- | --- | --- | --- | --- |"]
         fitting = [c for c in data["candidates"] if c.fits and c.result is not None]
         for c in sorted(fitting, key=lambda c: c.metrics["spl_variation_db"]):
             m = c.metrics
             md.append(f"| {c.label} | {m['spl_mean_db']:.1f} dB | "
-                      f"{m['spl_variation_db']:.1f} dB | {m['excursion_max_mm']:.2f} mm | "
-                      f"{m['excursion_max_mm'] * 7.07:.1f} mm | {m['ze_min_ohm']:.1f}-"
+                      f"{m['spl_variation_db']:.1f} dB | {m['excursion_rms_mm']:.2f} mm | "
+                      f"{m['excursion_peak_mm']:.2f} mm | "
+                      f"{m['excursion_peak_mm'] * k100:.1f} mm | {m['ze_min_ohm']:.1f}-"
                       f"{m['ze_max_ohm']:.1f} ohm | {m['air_volume_l']:.0f} l |")
         md += ["",
-               "(The 100 W column scales the peak excursion linearly with voltage - a rule of "
-               "thumb, not a thermal or suspension limit.)"]
+               "(Excursion is quoted as rms and as one-way peak - the peak figure is what "
+               "compares with Xmax. The 100 W column scales the peak linearly with voltage "
+               f"(x{k100:.2f}, from {v0:.2f} V rms into {re:.1f} ohm) - a rule of thumb, not a "
+               "thermal or suspension limit.)"]
 
     md += ["",
            "## How these numbers were derived",

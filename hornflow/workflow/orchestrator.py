@@ -173,7 +173,8 @@ class Pipeline:
                         "spl_mean_db": run.metrics.get("spl_mean_db"),
                         "spl_variation_db": run.metrics.get("spl_variation_db"),
                         "ze_min_ohm": run.metrics.get("ze_min_ohm"),
-                        "excursion_max_mm": run.metrics.get("excursion_max_mm"),
+                        "excursion_rms_mm": run.metrics.get("excursion_rms_mm"),
+                        "excursion_peak_mm": run.metrics.get("excursion_peak_mm"),
                     })
         self.scores = architecture.registry.score(self.arch_results)
         self.state.architecture_candidates = [r.to_dict() for r in self.arch_results]

@@ -4,6 +4,10 @@ A horn design **workflow**, not a GUI: you edit one text file of numbers, run on
 command, and read a report that tells you what the horn will do, how big it will
 be, and which of several options is worth building.
 
+> **Contributing.** `main` is read-only: every change starts on a short-lived
+> branch (`feat/…`, `fix/…`, `docs/…`) and lands through a pull request. See
+> **[`CONTRIBUTING.md`](CONTRIBUTING.md)** — a `pre-commit` hook enforces it.
+
 You do **not** need to know loudspeaker engineering to use it. You do need to know
 two things about your situation: **how big a box you can live with** and **which
 frequency range you care about**. The tool derives the mouth, the depth, the throat
@@ -120,30 +124,71 @@ import *plus* comparison has run**; the state machine
 → VIPS_IMPORTED → BEM_COMPARISON_COMPLETED → BEM_VALIDATED | BEM_REJECTED`) is
 recorded in `state.json` and `bem_manual_report.md`.
 
-### The local UI: three tabs, one file (M1–M3)
+### The local UI: three tabs, and a host that acts (M1–M4)
 
 Every run now writes a small **single-page app** beside the report. It is the same
-offline viewer, extended with a tab strip — no server, no accounts, no build step,
-no new dependency:
+offline viewer, extended with a tab strip — no accounts, no build step, no new
+dependency:
 
 | tab | what it is |
 |---|---|
 | **Viewer** | the geometry, unchanged, plus a `Dimensions` overlay (default **m**, `mm` toggle) |
-| **Workflow** | the gates, the current state, the required questions, the single next action, the manual AKABAK checkpoint, the `.vips` import panel, the validation outcome and the rerun panel |
+| **Workflow** | a persistent current-state summary, then the nine process stages as **accessible accordions** — each showing its own answers and gates, with the current stage open by default. Locked stages stay visible, collapsed, with the reason. Includes the manual AKABAK checkpoint, the `.vips` import panel, the validation outcome and the run panel. Everything is read from the model: the browser never computes completion. |
 | **Results** | a labelled placeholder for the next milestone |
 
-```bash
-python3 run_pipeline.py params/horn_jbl_1200b.yaml --out runs
-# open the newest run's UI (offline; the GLB is embedded, so file:// works)
-firefox runs/<run_id>/deliverables/viewer/viewer.html
-# or over http (recommended - no browser file:// restrictions)
-python3 -m http.server 8765 --directory runs/<run_id>/deliverables
+Screenshots of the redesign, of the tab it replaced, and of the live host are in
+[`docs/ui/`](docs/ui/README.md); regenerate them with `tools/shoot_ui.sh <run_dir>`.
 
-# refresh the UI of a run that already exists (e.g. after --bem-import),
-# without re-running the pipeline and without touching state.json:
-python3 -m hornflow.cli params/horn_jbl_1200b.yaml --out runs --emit-ui [RUN_DIR]
+The nine Workflow stages are: Project and deployment · Driver and provenance ·
+Safety and electrical limits · Acoustic target · Envelope and manufacturing ·
+Architecture selection · Acoustic and folded design · Verification and AKABAK ·
+Final decision.
+
+```bash
+# the pipeline, as before
+python3 run_pipeline.py params/horn_jbl_1200b.yaml --out runs
+
+# the app, with a live host: editable brief, real Start run, real import
+python3 -m hornflow.app --run-dir runs/<run_id>          # newest run if omitted
+python3 -m hornflow.app --base params/horn_jbl_1200b.yaml --open   # no run yet
+
+# the same page, read-only, offline (the GLB is embedded, so file:// works)
+firefox runs/<run_id>/deliverables/viewer/viewer.html
+# or over plain http
+python3 -m http.server 8765 --directory runs/<run_id>/deliverables
 ```
 
+The host binds `127.0.0.1` only. Opening the page from disk without a server
+degrades exactly as before: the Viewer renders, the Workflow tab renders read-only,
+and every mutating action is replaced by a *Copy command* button.
+
+| endpoint | what it does |
+|---|---|
+| `GET /api/health` | liveness and the project root |
+| `GET /api/view` | the same view model the page embeds, plus `live`, `definitions`, `runs`, `brief_draft`, `brief_actions` |
+| `GET /api/progress` | structured run progress (lock, current stage, pass counts, log tail) — the browser never parses `logs.jsonl` |
+| `GET /api/definitions` | the allow-list of definition files a run may use |
+| `GET /api/runs` | runs on disk and the current one |
+| `POST /api/brief` | validate and save the draft brief (per-field errors, never a crash) |
+| `POST /api/brief/freeze` | require every hard-required answer, write the definition, **prove it loads** with the real `config.load()`, record revision + input hash |
+| `POST /api/run` | run `run_pipeline()` **in this process** (no shell, no command from the page); one-run lock; returns immediately and mints a new immutable run id |
+| `POST /api/import` | validate + compare a `.vips` export via `bem_import.import_into_run()`, enforcing every existing hard check |
+| `POST /api/decision` | record a structured `decision_log` entry (`accept_unvalidated` needs a fixed reason, and a note for *Other*) |
+| `POST /api/select` | switch the current run by **name** |
+
+An API request can name a *definition*, a *run id* or an *export sub-directory* —
+never a path. Every name is resolved through `safe_under()`, which refuses absolute
+paths, `..`, `~` and symlink escapes, and all reads and writes stay under the
+project root. Errors come back structured; a traceback never reaches the page and
+the server log keeps the detail.
+
+The page renders a **HornFlow-emitted view model**
+(`deliverables/viewer/app_view.json`, also embedded in the HTML):
+`hornflow/app/view.py` derives it from `state.json`, the frozen brief, `logs.jsonl`,
+the BEM manifest and the export folder. The browser still never computes an acoustic
+result and never writes `state.json` — `POST /api/decision` is the only endpoint that
+writes run state, and it appends a decision rather than touching a measurement.
+Every run made before this change still opens as a plain viewer.
 The page renders a **HornFlow-emitted view model** (`deliverables/viewer/app_view.json`,
 also embedded in the HTML): `hornflow/app/view.py` derives it from `state.json`,
 `logs.jsonl`, the BEM manifest and the export folder. The UI never reads `state.json`
@@ -208,7 +253,7 @@ Derived, not guessed:
 | depth | **1500 mm** | your limit, fully used |
 | predicted band | **60-200 Hz, 104.5 dB mean, 8.0 dB p-p** at 2.83 V / 1 m | Stage-1 model |
 | gain over the same driver direct-radiating | **+13 dB average** in 60-200 Hz | why the horn is worth building |
-| excursion | 0.55 mm peak at 2.83 V = **5 % of the 11.35 mm Xmax** | Xmax would be reached at ~59 V / ~950 W, so it is thermally limited, not travel limited |
+| excursion | 0.55 mm **rms** / 0.78 mm **one-way peak** at 2.83 V rms = **7 % of the 11.35 mm Xmax** | Xmax would be reached at ~41 V rms / ~476 W, so it is thermally limited, not travel limited |
 
 **Hard limit from physics:** with 260 mm throat and 1500 mm depth, the lowest cut-off
 that still meets the mouth criterion is **58.7 Hz**. Lower than that needs a deeper
@@ -306,7 +351,7 @@ exactly the parameters the ATH/ABEC LE scripts use, so Stage 2 can reuse them.
 | **k·rm** | mouth circumference measured in wavelengths at the cut-off; below ~0.7 the response gets peaky |
 | **1P / Webster model** | the simple one-dimensional theory this tool uses (plane wave-fronts) |
 | **BEM** | the 3D numerical method AKABAK uses for the full picture (Stage 2) |
-| **excursion** | how far the diaphragm moves; compare with the driver's Xmax |
+| **excursion** | how far the diaphragm moves. The solver drives the network in **volts rms**, so its excursion column is **rms**; the report states both rms and one-way peak, and the **peak** figure is the one to compare with the driver's Xmax (data sheets quote Xmax one-way peak) |
 | **variation** | peak-to-peak wobble of the on-axis response inside your band; smaller = flatter |
 | **DI** | directivity index: how much the horn concentrates sound forward |
 | **rear chamber** | the box behind the driver (your fixed 28 L chassis) |
@@ -321,7 +366,8 @@ measured `Fr`: the fs implied by `Mms`/`Cms` comes out **31.77 Hz vs 31.70 Hz
 
 `Xmax` is optional but useful: when it is present the report says what fraction of
 it the predicted excursion uses and at what drive voltage/power Xmax would be
-reached (for this design: 0.55 mm at 2.83 V, and Xmax at ~59 V ≈ 950 W - so it is
+reached (for this design: 0.55 mm rms / 0.78 mm one-way peak at 2.83 V rms, and
+Xmax at ~41 V rms ~ 476 W - so it is
 thermally limited, not travel limited).
 
 ## Tests

@@ -27,17 +27,28 @@ def hard_gates(params, feasibility, runs, variants=None, limits=None) -> list:
     drv = params.driver
     out = []
 
-    # excursion vs Xmax
+    # excursion vs Xmax - like-for-like: one-way peak travel against one-way peak Xmax
+    from ..domain.excursion import RMS_TO_PEAK, normalize_convention, xmax_one_way_peak
+
     xmax = drv.Xmax
-    exc = 0.0
+    exc_rms = 0.0
     for r in runs:
-        if getattr(r, "excursion_m", None) is not None:
-            exc = max(exc, float(np.max(r.excursion_m)))
+        arr = getattr(r, "excursion_rms_m", None)
+        if arr is None:
+            arr = getattr(r, "excursion_m", None)   # pre-1.1 state, still rms
+        if arr is not None:
+            exc_rms = max(exc_rms, float(np.max(np.abs(arr))))
+    exc_peak = RMS_TO_PEAK * exc_rms
     if xmax:
-        ok = exc <= xmax
-        out.append(GateResult("excursion<=Xmax", ok,
-                              f"max excursion {exc*1e3:.3f} mm vs Xmax {xmax*1e3:.2f} mm",
-                              "ONE_DIMENSIONAL_SIMULATION"))
+        conv = normalize_convention(getattr(drv, "Xmax_convention", None))
+        peak_limit = xmax_one_way_peak(xmax, conv)
+        ok = exc_peak <= peak_limit
+        out.append(GateResult(
+            "excursion<=Xmax", ok,
+            f"peak travel {exc_peak * 1e3:.3f} mm "
+            f"(= {exc_rms * 1e3:.3f} mm rms x sqrt(2)) vs Xmax "
+            f"{peak_limit * 1e3:.2f} mm one-way peak",
+            "ONE_DIMENSIONAL_SIMULATION"))
     else:
         out.append(GateResult("excursion<=Xmax", False, "Xmax unknown (safety-critical)",
                               "USER_INPUT"))

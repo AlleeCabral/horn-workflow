@@ -112,3 +112,152 @@ model is handled by one translation point (`app/view.py`) plus a golden test.
 acceptance test is that a regenerated `viewer.html` behaves identically and a run
 without `app_view` shows only the Viewer tab; M4's acceptance test is one real JBL
 run driven end to end from the Workflow tab.
+
+---
+
+## ADR-0012 — one source of truth for excursion and Xmax conventions
+
+**Problem.** `curves.csv` exported a column named `excursion_peak_mm` that held
+**rms** displacement. `response.simulate()` drives the lumped-element network with
+`sim.voltage` in volts rms (2.83 V), so `current = V/Ze`, `velocity = Bl·I/Zm` and
+`excursion = velocity/(jω)` are *all* rms phasors. The label was wrong, so every
+"Xmax is reached at N volts" figure was optimistic by √2 in voltage and 2× in power
+(59 V / 952 W instead of 41 V / 476 W) — an error in the unsafe direction, and the
+hard gate compared rms travel against a one-way-peak Xmax.
+
+**Alternatives.** (a) Multiply the stored values by √2 and keep the old name — this
+silently changes every historical number. (b) Keep the name, fix only the text —
+leaves the trap in place for the next reader. (c) Both columns, explicit names,
+centralised conversion, header-based migration.
+
+**Decision.** (c). `hornflow/domain/excursion.py` is the single source of truth for
+`RMS_TO_PEAK`, the Xmax convention (default `one_way_peak`, validated, never
+guessed), `xmax_one_way_peak()`, `summarize()` and `excursion_gate()`. The solver
+convention stays rms; CSV/schema carry `excursion_rms_m` **and**
+`excursion_peak_m`; the gate and every report compare peak against one-way peak.
+
+**Backward compatibility.** `report.read_csv()` detects v1 headers and migrates in
+memory with an explicit note (values never reinterpreted); the state schema went
+1.0 → 1.1 with a registered migration that renames `excursion_m` and records itself
+in the new `state.migrations` list. Both are header/field-name based, so an old file
+is never silently treated as if its excursion column were peak.
+
+**Consequences.** The baseline fixture and its checksum were regenerated *once*,
+deliberately: SPL, impedance and every other metric are bit-identical, only the
+header and the added peak column changed. `docs/migration-notes.md` records it.
+
+**Validation.** `tests/test_excursion_convention.py` (27 tests) proves the rms
+convention from the generating calculation, asserts `peak = √2·rms`, checks the v1
+migration, and includes a gate test in which a driver whose rms travel fits but
+whose peak travel does not must fail.
+
+---
+
+## ADR-0014 — M4: a local, in-process host is the only thing that may act
+
+**Problem.** M3's buttons were inert: they explained why they were disabled and offered
+a copyable command. The next step had to make them real without (a) adding a
+dependency, (b) letting the browser compute anything, (c) letting a request name a
+filesystem path, and (d) creating a second source of truth for run state.
+
+**Alternatives.** (a) A web framework (Flask/FastAPI) — a dependency, and no benefit
+over `http.server` at this size. (b) Shelling out to the CLI from the page — a command
+string built from user input, i.e. the exact injection surface to avoid. (c) A queue
+and worker process (Redis/Celery) — a service, explicitly out of scope for v0.
+(d) A stdlib `ThreadingHTTPServer` that calls the pipeline and the import **in this
+process**, behind a one-run lock.
+
+**Decision.** (d). `hornflow/app/actions.py` is the whole action surface as plain
+Python (`ApiError` for structured failures, else normal returns), so it is testable
+with no socket; `hornflow/app/server.py` only routes and serialises. `POST /api/run`
+calls `run_pipeline()` directly. `POST /api/import` calls
+`bem_import.import_into_run()` directly, so every existing hard check still applies.
+One `threading.Lock` with a non-blocking acquire is the run lock; a second concurrent
+request gets `409 run_in_progress`. Progress is assembled server-side from the
+pipeline's own callback and `state.json` — the browser never parses `logs.jsonl`.
+
+**The path rule.** A request may name a *definition*, a *run id* or an *export
+sub-directory*, never a path. `safe_under(root, *parts)` rejects absolute names, `..`,
+`~` anywhere in the name, and re-checks containment after `resolve()`, so a symlink
+cannot escape either. `POST /api/brief/freeze` does not write a definition and hope:
+it writes to a staging file, runs the **real `config.load()`** on it, and only then
+keeps it — so a frozen brief can never produce a definition the pipeline would
+reject. Internal faults return a fixed JSON message; the traceback stays in the
+server log.
+
+**Consequences.** `python3 -m hornflow.app --run-dir runs/<id>` is the whole setup,
+on `127.0.0.1` only. Without a server the page is byte-for-byte the M3 snapshot, so
+`file://` use is unchanged. The brief lives in `.hornflow/` (git-ignored) as a draft,
+a frozen record with revision + input hash, and the generated definition under
+`params/generated/` conventions — `config.py` and the pipeline are untouched. A
+failed early run no longer leaves the app pointing at a directory that does not
+exist (the new run is adopted only once it has a `state.json`).
+
+**Validation.** `tests/test_app_api.py` (45 tests): the path guard (including a
+symlink escape), the brief store, freeze-then-`config.load()`, the one-run lock, a
+reporting-not-raising failing runner, decisions (fixed reasons, note for *Other*, and
+that accepting unvalidated **cannot** overwrite `BEM_VALIDATED` and never touches the
+measured checks), and 15 tests over a real `ThreadingHTTPServer` on an ephemeral port
+including traversal, oversized bodies, malformed JSON and a 500 that leaks nothing.
+
+---
+
+## ADR-0015 — an open manual BEM loop keeps verification unfinished
+
+**Problem.** The real JBL run driven through the M4 host reported all nine Workflow
+stages `complete` — including *Verification and AKABAK* — while the `.vips` exports had
+not been imported and `bem_state` was still `GUI_REQUIRED`.
+
+**Alternatives.** (a) Leave it to the user to notice the BEM chip. (b) Treat the
+manual loop as a tenth pipeline gate. (c) Feed the manual-BEM state into the stage
+model so the verification stage is incomplete while the loop is open.
+
+**Decision.** (c), with a narrow rule: while `bem_state` is one of the *open* manual
+states, the stage that owns `THREE_DIMENSIONAL_VERIFICATION` is `in_progress` with an
+explicit note naming the next human action — even though every gate it owns has
+`passed` or been deliberately `skipped`. `BEM_VALIDATED` and `BEM_REJECTED` both close
+it: a rejection is a decision made honestly, not an unfinished stage.
+
+**Consequences.** The stage model now cannot disagree with the manual state machine,
+which remains authoritative for `BEM_VALIDATED`. The real run reads `8 of 9` with
+"Verification and AKABAK" open and highlighted, and the next action is
+*Copy AKABAK checklist*.
+
+**Validation.** `tests/test_workflow_ui.py::test_the_manual_bem_step_keeps_verification_unfinished`
+covers open → validated → rejected.
+
+
+## ADR-0013 — the Workflow tab is nine progressive stages, not a wall of bands
+
+**Problem.** The M3 Workflow tab rendered eight bands stacked vertically, all
+expanded. On a 375 px viewport the required-questions band alone pushed everything
+else off-screen, the shared strip clipped, field rows collided
+(`operating_orientationUNKNOWN`), internal keys were the primary labels, and groups
+were judged "blocking" only on a first run - so W4 read *"wave A complete"* while
+five required values were blank. `docs/ui/workflow-before-375px.png` is the
+evidence.
+
+**Alternatives.** (a) Tighten the spacing of the existing bands - it would still be
+one unbounded scroll and the same wrong arithmetic. (b) One stage per page - more
+navigation for a nine-step process. (c) Nine accessible accordions under a
+persistent summary, with the current stage open by default.
+
+**Decision.** (c). The model (`app/view.py`) owns `workflow_stages`: order, status,
+per-stage answer counts, blockers, lock reasons and `open_by_default`. A stage is
+`complete` only when its required answers are in and its owned gates are done; a
+stage that collects no answers is *pure pipeline work* and cannot complete before a
+run exists. Locks cascade through a declared `requires` graph, but **evidence beats
+the lock**: a stage whose own gates have already run is never reported "locked" and
+never both "locked" and "complete". The renderer builds each body once and toggles
+`hidden`, so contents survive opening another stage.
+
+**Consequences.** The gate board is no longer a separate block - each stage shows
+its own gates, so nothing is displayed twice and nothing is hidden. Locked stages
+stay visible (collapsed, with the reason) rather than disappearing.
+
+**Validation.** `tests/test_workflow_ui.py`: the model contract (order, coverage,
+locks, counts, one open stage), a static renderer contract, and six DOM tests
+against a real browser-rendered document via `chrome --dump-dom`. Screenshots at
+five widths in `docs/ui/`.
+
+peak travel does not **must** fail.

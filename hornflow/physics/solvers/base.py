@@ -13,12 +13,14 @@ from typing import Protocol, runtime_checkable
 import numpy as np
 
 from ...domain.evidence import now_utc
+from ...domain.excursion import RMS_TO_PEAK
 
 # normalized per-frequency column order (spec)
 SIM_COLUMNS = (
     "frequency_hz", "drive_voltage_v", "input_power_w", "radiation_angle_sr",
     "spl_db", "impedance_real_ohm", "impedance_imag_ohm", "impedance_magnitude_ohm",
-    "phase_deg", "excursion_m", "group_delay_s", "throat_velocity_m_s",
+    "phase_deg", "excursion_rms_m", "excursion_peak_m", "group_delay_s",
+    "throat_velocity_m_s",
     "mouth_velocity_m_s",
 )
 
@@ -35,8 +37,9 @@ class SimulationRun:
     spl_db: np.ndarray
     impedance_real_ohm: np.ndarray
     impedance_imag_ohm: np.ndarray
-    excursion_m: np.ndarray
+    excursion_rms_m: np.ndarray                # rms, one-way (solver convention)
     phase_deg: np.ndarray
+    excursion_peak_m: np.ndarray | None = None  # one-way peak; sqrt(2)*rms if omitted
     throat_velocity_m_s: np.ndarray | None = None
     mouth_velocity_m_s: np.ndarray | None = None
     group_delay_s: np.ndarray | None = None
@@ -54,6 +57,17 @@ class SimulationRun:
     @property
     def impedance_magnitude_ohm(self) -> np.ndarray:
         return np.hypot(self.impedance_real_ohm, self.impedance_imag_ohm)
+
+    @property
+    def peak_excursion_m(self) -> np.ndarray:
+        """One-way peak travel [m].
+
+        Explicit if the solver set it, otherwise derived from the rms column with
+        the single documented factor - never a locally invented one.
+        """
+        if self.excursion_peak_m is not None:
+            return self.excursion_peak_m
+        return RMS_TO_PEAK * self.excursion_rms_m
 
     def to_dict(self) -> dict:
         d = asdict(self)
@@ -78,7 +92,8 @@ class SimulationRun:
                 "impedance_imag_ohm": float(self.impedance_imag_ohm[i]),
                 "impedance_magnitude_ohm": float(mag[i]),
                 "phase_deg": float(self.phase_deg[i]),
-                "excursion_m": float(self.excursion_m[i]),
+                "excursion_rms_m": float(self.excursion_rms_m[i]),
+                "excursion_peak_m": float(self.peak_excursion_m[i]),
                 "group_delay_s": _at(self.group_delay_s, i),
                 "throat_velocity_m_s": _at(self.throat_velocity_m_s, i),
                 "mouth_velocity_m_s": _at(self.mouth_velocity_m_s, i),

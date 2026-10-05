@@ -294,6 +294,246 @@ python3 -m pytest tests/ -q                              # 122 checks
 * Docs: `docs/app-local-multitab.md` §20.1 (status + implementation notes),
   `docs/adr.md` ADR-0011, `docs/ui-two-tab-mvp.md` D3 (metres), `README.md`.
 
+## 2026-10-04 — the project becomes a git repository
+
+* `git init -b main`; the whole tree is now versioned except what is generated.
+* **Ignore policy** (`.gitignore`): `runs/` and `results/` (both generated),
+  `AKABAK/` (426 MB of third-party Windows binaries — RDTeam's distribution, not
+  ours), `.hypothesis/`, `.pytest_cache/`, `__pycache__/`, editor noise. The
+  tracked tree is **130 files / 3.0 MB**. `AKABAK/` stays on disk; the pipeline
+  only needs its path.
+* **Moved the `.vips` test data** from `results/jbl_1200b/bem/export/` to
+  `tests/fixtures/bem_export/` (21 files, 288 KB) and pointed
+  `tests/test_bem_manual.py` at the new path, so `results/` can be ignored
+  wholesale. This is the one behaviour-free refactor in the change.
+* **`.gitattributes`**: `tests/fixtures/**` and `*.vips` are `-text`, because
+  `tests/test_baseline.py` asserts the sha256 of the frozen `curves.csv` and the
+  AKABAK exports are CRLF by construction.
+* **Branch rules** (`CONTRIBUTING.md`): `main` is read-only; every change starts
+  on `<type>/<slug>` and lands through a PR; Conventional Commits; one logical
+  change per commit; both suites must pass on the branch tip; the four working
+  documents (`history.md`, `handoff.md`, `docs/adr.md`, `docs/migration-notes.md`)
+  move in the same PR as the change they describe.
+* **Enforcement**: `.githooks/pre-commit` refuses to commit while `HEAD` is
+  `main` (override `HORNFLOW_ALLOW_MAIN_COMMIT=1`, used once for the baseline
+  import). Enabled with `git config core.hooksPath .githooks`. A PR template
+  (`.github/pull_request_template.md`) asks for the two test result lines, the
+  honest cost, and the deferrals.
+* **CI**: `.github/workflows/ci.yml` runs the legacy checks, the frozen baseline,
+  the pytest suite and both CLI entry points on Python 3.10–3.12, and asserts the
+  generated viewer shell is self-contained.
+* The baseline import is commit `c421f86` on `main`; the repository-process change
+  is on the branch `chore/repo-process-and-ci`, ready to push.
+* Remote: `origin = git@github.com:AlleeCabral/horn-workflow.git` (SSH auth
+  verified: `Hi AlleeCabral!`). The GitHub repository does not exist yet —
+  `gh` is not installed and there is no token in this environment, so the remote
+  has to be created before the first push.
+* Tests: legacy **147/147**; pytest **122 passed** (unchanged by the fixture move).
+
+## 2026-10-04 — Phase 1: the excursion convention, and the W4 completion contract
+
+Branch `fix/excursion-rms-and-workflow-contract` (2 commits, local; the remote
+repository still does not exist).
+
+### 1a — rms vs peak excursion (a real data error, in the unsafe direction)
+
+* **Proved the convention from the generating calculation**, not from the label:
+  `response.simulate()` drives the lumped-element network with `sim.voltage` in
+  **volts rms**, so `current = V/Ze`, `velocity = Bl·I/Zm` and
+  `excursion = velocity/(jω)` are all rms phasors (cross-check: `I_abs` = 0.6937 A
+  = 2.83/4.079 exactly).
+* Therefore the `curves.csv` column named `excursion_peak_mm` held **rms**. Every
+  "Xmax is reached at …" figure was optimistic by √2 in voltage and **2× in power**:
+  the report said **~59 V / ~952 W**, the truth is **~41 V rms / ~476 W**. The hard
+  gate also compared rms travel against a one-way-peak Xmax.
+* **`hornflow/domain/excursion.py` is new and is the single source of truth**:
+  `RMS_TO_PEAK`, the Xmax convention (`one_way_peak` default, `peak_to_peak`
+  converted by /2, validated — never guessed), `summarize()` and `excursion_gate()`.
+  `driver.Xmax_convention` is now a validated field with `Xmax_one_way_peak`.
+* **curves.csv v2**: `… I_abs, excursion_rms_mm, excursion_peak_mm, p_abs_Pa …`.
+  New `report.read_csv()` detects the v1 header, migrates **in memory** with an
+  explicit note, and never reinterprets the numbers.
+* **state.json 1.0 → 1.1** with a registered migration that renames
+  `simulation_runs[].excursion_m` → `excursion_rms_m`, derives `excursion_peak_m`,
+  and **records itself** in the new `state.migrations` list (explicit, not silent).
+* Updated: `report.py` (CSV, guidance, `excursion_power_text` now takes the summary),
+  `plots.py`, `advise.py` (also fixed the `×7.07` "100 W" fudge to `√(100·Re)/V₀`
+  = 6.74), `gates.py`, `sweep.py`, `sensitivity.py`, `webster.py` (both columns in
+  the normalized run schema), `reporting/markdown.py`, `orchestrator.py`.
+* **Baseline regenerated once, deliberately.** Every physical metric is unchanged
+  (104.5344 dB, 8.0293 dB, Zmin 4.0424 Ω); the manifest now carries
+  `excursion_rms_max_mm` 0.54858 **and** `excursion_peak_max_mm` 0.77581.
+* The corrected report line now reads: *"0.55 mm rms / 0.78 mm one-way peak at
+  33 Hz with 2.83 V rms – the peak travel is 7 % of the driver's 11.4 mm Xmax
+  (one-way peak) … about 41 V rms (~476 W)"*.
+
+### 1b — W4 could say "wave A complete" with required values blank
+
+* **Root cause:** `app.js` computed group and wave completion itself (counting any
+  non-null value as answered, and marking a group blocking only on a *first run*).
+  A **path-less required field could never be answered at all**, so the old model's
+  numbers were doubly wrong.
+* **Fix:** `app/view.py` now emits `completion` (per-field `accepted`, per-group
+  `complete`/`required_answered`/`blocked_by`/`first_unanswered`, per-wave
+  `complete`, and a flat `blockers` list with `next_required_field`). Acceptance
+  requires present + not-UNKNOWN + provenance + confidence; optional blanks never
+  block; `app.js` renders and no longer computes.
+* Field resolution order is now brief-by-path → brief-by-key → run-state-by-path,
+  which is what makes the path-less required fields answerable.
+* Human labels + help text moved into the model (`FIELD_LABELS`, `FIELD_HELP`,
+  `OPTIONAL_FIELDS`); the internal key survives only as a tooltip.
+* **Honest numbers on the real JBL run:** 7 of 20 required answers, 13 blockers,
+  wave A **incomplete**, next required = "What is it for?" — where the old UI said
+  the opposite. 20 required of 22 declared fields (2 optional).
+* `view_schema` 1.0 → 1.1. W4's field rows are now label-once / value-once /
+  provenance-below, with a left rule on the fields that actually need input.
+
+### Tests
+
+legacy **147/147**; pytest **122 → 159 passed** (new `test_excursion_convention.py`,
+27 tests; 10 new completion tests in `test_app_view.py`). One old test that encoded
+the *wrong* behaviour ("no group is blocking when a run exists") was replaced with
+the honest contract. A real pipeline run still produces a viewer with
+`view_schema 1.1` and the corrected excursion wording.
+
+
+## 2026-10-04 — Phase 2: the Workflow tab becomes nine progressive stages
+
+Branch `fix/excursion-rms-and-workflow-contract` (third commit). This is the UI
+redesign the brief asked for; the M3 screenshot was an unacceptable regression
+fixture and is now committed as *evidence* (see `docs/ui/`).
+
+### The model owns the stages
+
+* `hornflow/app/view.py` gained `WORKFLOW_STAGES` (the nine documented steps) and
+  `_workflow_stages()`, which emits per stage: `status`, `complete`,
+  `required_answered`/`required_total`, `blockers`, `locked`/`locked_by`/
+  `locked_reason`, the `gates` it owns, its `group_ids`, its `panels`, and
+  `open_by_default`. Plus `_brief_actions()` (Save draft / Freeze brief, each with
+  the reason it is disabled) and `current_stage` in the summary.
+* Every gate belongs to exactly one stage (coverage asserted against `STAGE_ORDER`),
+  so the old 16-row gate board dissolves into the stages and nothing is shown twice.
+* Two rules the tests forced out, both real:
+  1. **locked and complete must be mutually exclusive** - and so **evidence beats
+     the lock**: a stage whose own gates have already run is not "locked". Without
+     that, the four engineering stages read "locked" forever on a real run whose
+     brief questions were never entered.
+  2. A stage with **no questions of its own is pure pipeline work** and cannot be
+     complete before a run exists - otherwise it claimed "complete" because nothing
+     was measurable yet.
+* Lock graph: `safety_limits ← driver_provenance`;
+  `architecture_selection ← acoustic_target + envelope_manufacturing`;
+  `acoustic_design ← architecture_selection`; `verification_bem ← acoustic_design`;
+  `final_decision ← verification_bem`.
+* Honest numbers: a first run has **0/9** stages complete and **5** locked; the real
+  JBL run has **4/9** complete (the engineering stages) and the five question stages
+  needing input. `view_schema` 1.1 → 1.2.
+
+### The renderer
+
+* `ui/app.js` rewritten around a persistent summary band and nine accordions:
+  `<button class="acc-head" aria-expanded aria-controls>` + `<div class="acc-body"
+  role="region" aria-labelledby>`, `hidden` toggling, Up/Down/Home/End keyboard
+  navigation, and a visible `:focus-visible` ring.
+* Bodies are **built once and toggled**, so opening another stage cannot lose
+  content.
+* Field rows are label-once / value-once / provenance-below, with `Required` /
+  `Optional` instead of repeated `UNKNOWN` chips, the internal key only in a
+  `title`, and a left rule on the fields that need input.
+* `ui/app.css`: single-column below 900 px and at most two columns above;
+  `overflow-x: hidden` + `min-width: 0` on flex children so nothing can clip;
+  `pre.cmd` wraps; the shared strip wraps and drops separators/`assumptions` below
+  700 px (it was clipping at 375 px before).
+
+### Evidence
+
+* `tools/shoot_ui.sh <run_dir>` renders the UI at 375/768/1280/1440/1920 px with
+  `google-chrome --headless=new --screenshot` - **no browser-automation
+  dependency**. `docs/ui/` holds the before/after pair at 375 and 1440 px, the
+  before being generated from a scratch git worktree at `bdfb7a5` so the comparison
+  is genuinely like-for-like. The before shot reproduces every listed defect:
+  clipped strip, four stacked bands, *"wave A complete"* with blank values,
+  `operating_orientationUNKNOWN` collisions.
+* The same browser tool backs the DOM tests: `chrome --dump-dom` after a 4 s
+  virtual-time budget gives a **really rendered document**, asserted for nine
+  accordions, exactly one open, the open one being the stage the model named, human
+  labels present, internal keys absent from rendered text, and "Read-only snapshot"
+  labelled in static mode.
+
+### Tests
+
+legacy **147/147**; pytest **159 → 185 passed** (new `tests/test_workflow_ui.py`,
+26 tests: the model contract, the renderer's static contract, and six browser DOM
+tests that skip cleanly where no browser exists).
+
+### Not in this phase
+
+The local host (M4) is still to come, so every state-changing button remains
+disabled with a reason and a `Copy command`; the Results tab is still a placeholder.
+
+## 2026-10-05 — Phase 3: the local host (M4), and the manual loop closes the stage model
+
+The Workflow tab's buttons are now real. `python3 -m hornflow.app --run-dir
+runs/<id>` starts a standard-library `ThreadingHTTPServer` on `127.0.0.1` that
+serves the same page (live, this time) and exposes the action surface as JSON.
+Without a server the page is byte-for-byte the M3 snapshot, so nothing regresses.
+
+### What was added
+
+| module | role |
+|---|---|
+| `hornflow/app/brief.py` | the draft/frozen brief, per-field validation, driver resolution, and `freeze()` - which writes a definition, **proves it loads with the real `config.load()`**, and only then keeps it |
+| `hornflow/app/actions.py` | the whole action surface as plain Python (`ApiError`, `safe_under`, `AppActions`), so it is testable with no socket |
+| `hornflow/app/server.py` | routing + serialisation only; static files; `127.0.0.1` by default |
+| `hornflow/app/__main__.py` | `python3 -m hornflow.app [--run-dir\|--base] [--open]` |
+
+### The decisions that mattered
+
+* **In-process, not a subprocess.** `POST /api/run` calls `run_pipeline()` directly
+  and `POST /api/import` calls `bem_import.import_into_run()` directly, so every
+  existing hard check still applies and no command is ever built from page input.
+* **A request never names a path.** It names a *definition*, a *run id* or an
+  *export sub-directory*; `safe_under()` rejects absolute names, `..`, `~` anywhere
+  and re-checks containment after `resolve()` so a symlink cannot escape.
+* **The brief cannot break the pipeline.** `freeze()` stages the file, runs the real
+  loader on it, and refuses (leaving nothing behind) if it would not load.
+* **One run lock.** A non-blocking `threading.Lock`; a second concurrent run gets
+  `409 run_in_progress` with an actionable message.
+* **`draft()` is the draft overlaid on the frozen record**, so a frozen brief stays
+  visible without re-typing it, and `Save draft` is offered only while the draft
+  actually differs from the frozen revision.
+
+### Three real bugs the phase exposed (and fixed)
+
+1. A run that failed early left the app pointing at a directory with no
+   `state.json`; the new run is now adopted only once its state exists.
+2. The static document root was fixed at startup, so after a run the host still
+   served the *previous* run's page. It is resolved per request now.
+3. **The real run reported all nine stages complete while the `.vips` exports had
+   not been imported.** An open manual BEM loop now keeps *Verification and AKABAK*
+   `in_progress` with an explicit note; `BEM_VALIDATED` and `BEM_REJECTED` both close
+   it (ADR-0015).
+
+### The vertical slice, on the real project
+
+`POST /api/brief` -> `POST /api/brief/freeze` (rev 2,
+`.hornflow/generated/club_subwoofer_corner.yaml`, input hash `a970aa29…`) ->
+`POST /api/run` -> **run_20261005T081734+0000_39db2c**, 15 of 16 gates, 94% ->
+`GUI_REQUIRED`, next action *Copy AKABAK checklist*. `report.md` and the viewer were
+written. The page shows 20/20 answers, 8 of 9 stages complete, and the exact manual
+command. Screenshots: `docs/ui/workflow-live-{375,1440}px.png`.
+
+### Tests
+
+legacy **147/147**; pytest **185 → 232 passed** (new `tests/test_app_api.py`, 45
+tests: the path guard including a symlink escape, the brief store, freeze-then-load,
+the one-run lock, a failing runner that reports instead of raising, decisions, and 15
+tests over a real `ThreadingHTTPServer` on an ephemeral port - traversal, oversized
+bodies, malformed JSON, and a 500 that leaks no traceback). Two Phase-2 tests were
+updated where the behaviour legitimately changed: the static-host `Save draft` reason
+now names the command that can write, and a snapshot's `Freeze brief` can never be
+enabled however complete the brief is.
+
 # CURRENT STATE
 
 **Model (GUI, `~/AI projects/horn design/Saved/`):**
@@ -348,8 +588,13 @@ fully validated. If the horn will be built **into a wall or corner**, the IB is 
    importer. Remaining: run the infinite-baffle re-solve (see NEXT STEP) so the
    −8.7 dB offset closes and the folded candidate can be `BEM_VALIDATED` at the
    default tolerance.
-2. `excursion_peak_mm` in `curves.csv` is rms (mislabelled) → rename to `excursion_rms_mm` or
-   ×√2; also affects the X_max statements in the report.
+2. ~~`excursion_peak_mm` in `curves.csv` is rms (mislabelled)~~ **DONE (2026-10-04)**:
+   the values were proven rms from the generating calculation, `curves.csv` is at v2
+   with `excursion_rms_mm` + a derived `excursion_peak_mm`, the Xmax comparison is
+   like-for-like and the report states one-way/peak-to-peak *and* rms/peak explicitly.
+   **Still needs the user:** confirm the 1200B's 11.35 mm is one-way peak (it is
+   assumed so). If the data sheet means peak-to-peak, set `Xmax_convention` in the
+   driver YAML and the margins tighten accordingly.
 3. Optional: `Mic Field (Mesh File)` with the **`interface`** tag → colour map painted *on the
    mouth plane* (no gap, by construction); use `Edge Length 0.1 m` there (→ trustworthy to 1715 Hz).
 4. Optional: `--to-csv` / `--plot-field` converters so exported curves/fields can be plotted
@@ -357,6 +602,12 @@ fully validated. If the horn will be built **into a wall or corner**, the IB is 
 5. Optional: a `--bem-import` golden test against a stored `.vips` pair is in place
    (`tests/test_bem_manual.py`); further coverage could add a stored *current-project*
    `.vips` snapshot once the IB re-solve is done.
+6. **Phase 4 (architecture tournament) is next**: only sealed, reflex, front-loaded
+   horn and folded horn have real models; a tapped horn must not be allowed to win
+   until it has a validated model compared against a reference case.
+7. The chosen U-fold's bend is still flagged high-risk (~290° phase skew at 200 Hz) -
+   Phase 6 must compare it against a gentler radius, the J-fold and a compact winner.
+
 
 # DEFERRED RESEARCH — *read later, do not run now*
 * **ATH4 thread / horn-design simulator knowledge base**

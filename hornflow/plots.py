@@ -102,8 +102,13 @@ def electrical_figure(r: Result, out_dir: Path) -> Path:
 
 
 def excursion_figure(r: Result, out_dir: Path) -> Path:
+    from .domain.excursion import RMS_TO_PEAK
+
     fig, ax = _fig()
-    ax.semilogx(r.f, np.abs(r.excursion) * 1e3, color="tab:brown", label="peak excursion")
+    x_rms = np.abs(r.excursion) * 1e3
+    ax.semilogx(r.f, x_rms, color="tab:brown", label="excursion (rms)")
+    ax.semilogx(r.f, x_rms * RMS_TO_PEAK, color="tab:brown", linestyle="--",
+                linewidth=1.0, label="excursion (one-way peak)")
     ax.set_xlabel("frequency [Hz]")
     ax.set_ylabel("excursion [mm]")
     ax2 = ax.twinx()

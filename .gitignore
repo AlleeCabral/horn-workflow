@@ -49,3 +49,6 @@ scratch/
 #  * hornflow/viz/viewer/vendor/       - vendored three.js r128 (MIT), needed for
 #    the offline viewer (ADR-0009).
 # ---------------------------------------------------------------------------
+
+# the local app state (draft brief, frozen brief, generated definitions)
+.hornflow/

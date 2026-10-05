@@ -117,7 +117,8 @@ class Driver:
     rear_q: float = 7.0       # rear cavity loss (Q at the cavity resonance)
     Fr: float | None = None   # measured free-air resonance [Hz] (validation only)
     Nd: int = 1               # number of voice coils (informational)
-    Xmax: float | None = None  # [m] one-way linear excursion limit (from the data sheet)
+    Xmax: float | None = None  # [m] excursion limit - see Xmax_convention below
+    Xmax_convention: str = "one_way_peak"  # one_way_peak | peak_to_peak
 
     @property
     def Sd(self) -> float:
@@ -157,6 +158,19 @@ class Driver:
             raise ValueError("driver.Le and driver.rear_volume must be >= 0")
         if self.Xmax is not None and self.Xmax <= 0.0:
             raise ValueError("driver.Xmax must be > 0 (metres) when given")
+        # Validate (do not guess) the excursion convention.  Imported locally so
+        # this module stays importable from anywhere without a cycle.
+        from .domain.excursion import normalize_convention
+
+        self.Xmax_convention = normalize_convention(self.Xmax_convention)
+
+    @property
+    def Xmax_one_way_peak(self) -> float | None:
+        """Xmax converted to one-way peak [m] - the like-for-like comparison value."""
+        from .domain.excursion import xmax_one_way_peak
+
+        return None if self.Xmax is None else xmax_one_way_peak(
+            self.Xmax, self.Xmax_convention)
 
 
 @dataclass
@@ -320,6 +334,7 @@ def _build_driver(d: dict) -> Driver:
         Fr=None if _get(d, "Fr", "driver", None) is None else float(d["Fr"]),
         Nd=int(_get(d, "Nd", "driver", 1)),
         Xmax=None if _get(d, "Xmax", "driver", None) is None else float(d["Xmax"]) * MM,
+        Xmax_convention=_get(d, "Xmax_convention", "driver", "one_way_peak"),
     )
 
 

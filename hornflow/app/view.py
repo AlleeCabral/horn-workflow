@@ -26,7 +26,7 @@ from ..io.artifacts import atomic_write, sha256_file
 from ..workflow.stages import (OPTIONAL_STAGES, STAGE_ORDER, Stage,
                                prerequisites)
 
-VIEW_SCHEMA = "1.0"
+VIEW_SCHEMA = "1.2"
 
 # The eight manual-solve states, in order (the authoritative definition lives in
 # hornflow.physics.solvers.manual; repeated here only as a display order).
@@ -136,9 +136,257 @@ FIRST_RUN_QUESTIONS = (
 
 
 
+# --------------------------------------------------------------------------- #
+#  the accept-as-unvalidated reason list (fixed list, plus Other)
+# --------------------------------------------------------------------------- #
+ACCEPT_REASONS = (
+    "Boundary-condition mismatch is understood but unresolved",
+    "AKABAK Free/export limitation",
+    "Partial evidence accepted for prototype only",
+    "Comparison tolerance intentionally waived",
+    "Candidate retained for geometry/manufacturing review only",
+    "Other",
+)
+
 # ---------------------------------------------------------------------------
-#  helpers
+#  field presentation + completion metadata
 # ---------------------------------------------------------------------------
+# The model - not the UI - owns the human labels, the required flags and the
+# completion arithmetic, so the browser can never derive "wave A complete" on its
+# own (the defect this replaced: W4 said "wave A complete" while five required
+# values were blank).  ``key`` keeps the internal name for a developer tooltip.
+FIELD_LABELS = {
+    "deployment": "What is it for?",
+    "boundary": "Where will it stand?",
+    "operating_orientation": "Operating orientation",
+    "transport_orientation": "Transport orientation",
+    "manufacturer": "Driver manufacturer",
+    "model": "Driver model",
+    "data_source": "Where the numbers come from",
+    "ts_set": "Thiele/Small parameter set",
+    "Xmax": "Excursion limit (Xmax)",
+    "xmax_convention": "Xmax convention",
+    "thermal_power_w": "Thermal power rating",
+    "min_safe_impedance_ohm": "Amplifier minimum safe impedance",
+    "f_min_hz": "Lowest required frequency",
+    "f_max_hz": "Highest required frequency",
+    "spl_continuous_db": "Continuous SPL target",
+    "measurement_distance_m": "Measuring distance",
+    "max_width_mm": "Maximum width",
+    "max_height_mm": "Maximum height",
+    "max_depth_mm": "Maximum depth",
+    "max_external_volume_m3": "Maximum external volume",
+    "max_mass_kg": "Maximum mass",
+    "method": "Manufacturing method",
+}
+
+# Fields that never block completion because a required sibling already bounds
+# them (W/H/D bound the volume) or because they are genuinely optional.
+OPTIONAL_FIELDS = frozenset({"transport_orientation", "max_external_volume_m3"})
+
+FIELD_HELP = {
+    "deployment": "One line, e.g. 'club subwoofer in a corner'.",
+    "data_source": "Measured beats datasheet beats estimated - it sets the "
+                   "confidence of every downstream number.",
+    "xmax_convention": "Data sheets usually quote one-way peak. Choose "
+                       "peak-to-peak only if the sheet says so.",
+    "thermal_power_w": "The voice-coil power rating, not the amplifier power.",
+    "max_external_volume_m3": "Optional - derived from width x height x depth "
+                              "when left blank.",
+}
+# ---------------------------------------------------------------------------
+#  the nine progressive stages (docs/app-local-multitab.md §4)
+# ---------------------------------------------------------------------------
+# Each stage owns the question groups it collects and the pipeline gates it
+# reports, and declares what must be complete before it unlocks.  The UI renders
+# this list; it never invents a stage, an order, or a lock.
+# A stage with no owned gates is complete on its answers alone (true for the five
+# question stages on a first run, where every gate is still pending).
+WORKFLOW_STAGES = (
+    {"id": "project_deployment", "name": "Project and deployment",
+     "purpose": "What the system is for and the boundary it will load into.",
+     "groups": ("Q-PRJ-01",), "gates": (), "requires": ()},
+    {"id": "driver_provenance", "name": "Driver and provenance",
+     "purpose": "Which driver, and how trustworthy its numbers are.",
+     "groups": ("Q-DRV-01/02",), "gates": (), "requires": ()},
+    {"id": "safety_limits", "name": "Safety and electrical limits",
+     "purpose": "The excursion, thermal and impedance limits that bound output.",
+     "groups": ("Q-DRV-04/05+Q-ELE-02",), "gates": ("INPUT_AUDIT",),
+     "requires": ("driver_provenance",)},
+    {"id": "acoustic_target", "name": "Acoustic target",
+     "purpose": "Band, level and distance - what the system must actually deliver.",
+     "groups": ("Q-TGT-01/02",),
+     "gates": ("LIMIT_IMPACT_ANALYSIS", "PHYSICAL_FEASIBILITY"), "requires": ()},
+    {"id": "envelope_manufacturing", "name": "Envelope and manufacturing",
+     "purpose": "The size and mass gates, and how it will be built.",
+     "groups": ("Q-PHY-01/02+Q-MFG-01",), "gates": (), "requires": ()},
+    {"id": "architecture_selection", "name": "Architecture selection",
+     "purpose": "Which acoustic family wins, on scored evidence.",
+     "groups": (), "gates": ("ARCHITECTURE_SCREENING",),
+     "requires": ("acoustic_target", "envelope_manufacturing")},
+    {"id": "acoustic_design", "name": "Acoustic and folded design",
+     "purpose": "The unfolded reference, the fold, and its area-law check.",
+     "groups": (),
+     "gates": ("IDEAL_ACOUSTIC_OPTIMIZATION", "FOLD_TOPOLOGY_GENERATION",
+               "FOLD_GEOMETRY_VALIDATION", "ONE_DIMENSIONAL_SIMULATION"),
+     "requires": ("architecture_selection",)},
+    {"id": "verification_bem", "name": "Verification and AKABAK",
+     "purpose": "The manual 3-D solve, its import and the validation outcome.",
+     "groups": (),
+     "gates": ("FOLD_AWARE_SIMULATION", "THREE_DIMENSIONAL_VERIFICATION"),
+     "panels": ("manual_bem", "import", "outcome"),
+     "requires": ("acoustic_design",)},
+    {"id": "final_decision", "name": "Final decision",
+     "purpose": "Structure, manufacture, sensitivity, and the recorded decision.",
+     "groups": (),
+     "gates": ("STRUCTURAL_SCREENING", "MANUFACTURING_TRANSFORMATION",
+               "CONSTRAINT_SENSITIVITY", "INDEPENDENT_CRITIQUE",
+               "FINAL_COMPARISON", "REPORT_AND_EXPORT"),
+     "panels": ("rerun",),
+     "requires": ("verification_bem",)},
+)
+
+# A gate in one of these states is not holding its stage back; "skipped" is how
+# the pipeline records an optional stage it deliberately did not run.
+GATE_OK_STATES = ("passed", "skipped")
+
+
+def _workflow_stages(questions: list, gates: list, *, run_exists: bool,
+                     bem_open: bool = False) -> list:
+    """Derive the nine stage rows: status, answer counts, lock reason, default open.
+
+    A stage is complete when none of its required answers is outstanding and every
+    gate it owns is done.  On a first run the gates are all still pending by
+    definition, so only the answers can hold a stage back - otherwise the brief
+    could never be frozen.
+    """
+    qmap = {q["id"]: q for q in questions}
+    gmap = {g["stage"]: g for g in gates}
+    status_by_id: dict = {}
+    rows = []
+    for spec in WORKFLOW_STAGES:
+        groups = [qmap[g] for g in spec["groups"] if g in qmap]
+        owned = [gmap[g] for g in spec["gates"] if g in gmap]
+
+        req_total = sum(g["required_total"] for g in groups)
+        req_done = sum(g["required_answered"] for g in groups)
+        blockers = [{"group": g["id"], "field": f}
+                    for g in groups for f in (g["blocked_by"] or [])]
+        failed = [g["stage"] for g in owned if g["status"] in ("failed", "blocked")]
+        not_done = ([] if not run_exists else
+                    [g["stage"] for g in owned if g["status"] not in GATE_OK_STATES])
+
+        # The manual BEM loop is not a pipeline gate: while it is open (the human
+        # still has to solve and export), the verification stage is unfinished even
+        # though every gate it owns has "passed" or been deliberately "skipped".
+        manual_open = bool(bem_open) and "THREE_DIMENSIONAL_VERIFICATION" in spec["gates"]
+
+        missing = [s for s in spec["requires"] if status_by_id.get(s) != "complete"]
+        # Evidence beats the lock: a stage whose own gates have already run is not
+        # "locked" - the work visibly happened.  Without this, the four
+        # engineering stages would read "locked" forever on a real run whose brief
+        # questions were never entered, even though their gates had all passed.
+        gates_done = bool(owned) and run_exists and all(
+            g["status"] in GATE_OK_STATES for g in owned)
+        locked = bool(missing) and not gates_done
+
+        # Answer-driven stages complete on their answers; gates are then
+        # informational, so a pending pipeline stage cannot hold the brief back.
+        # A stage with no questions of its own is pure pipeline work, and cannot
+        # be complete before a run exists - otherwise it would claim "complete"
+        # simply because nothing was measurable yet.
+        has_questions = bool(groups)
+        if has_questions:
+            gates_ok = not (failed or not_done)
+        else:
+            gates_ok = bool(owned) and all(
+                g["status"] in GATE_OK_STATES for g in owned)
+        answered_ok = not blockers
+        complete = answered_ok and gates_ok and not locked and not manual_open
+
+        if locked:
+            status = "locked"
+        elif failed:
+            status = "blocked"
+        elif not answered_ok:
+            status = "needs_input"
+        elif not complete:
+            status = "in_progress"
+        else:
+            status = "complete"
+        status_by_id[spec["id"]] = status
+
+        rows.append({
+            "id": spec["id"], "order": len(rows), "name": spec["name"],
+            "purpose": spec["purpose"], "status": status, "complete": complete,
+            "manual_open": manual_open,
+            "note": ("The external solve is still outstanding: solve in the AKABAK "
+                     "GUI, export the .vips spectra, then import them."
+                     if manual_open else None),
+            "required_total": req_total, "required_answered": req_done,
+            "blocker_count": len(blockers), "blockers": blockers,
+            "group_ids": [g["id"] for g in groups],
+            "locked": locked,
+            "locked_by": (missing if locked else []),
+            "locked_reason": (("Finish " + ", ".join(missing) + " first.")
+                              if locked else None),
+            "blocked_by_evidence": (missing if (missing and not locked) else []),
+            "gates": [{"stage": g["stage"], "status": g["status"],
+                       "optional": g["optional"], "detail": g["detail"]}
+                      for g in owned],
+            "gate_failed": failed,
+            "panels": list(spec.get("panels") or ()),
+        })
+
+    # the first stage that still needs work and is not locked - opened by default
+    current = next((r["id"] for r in rows
+                    if not r["complete"] and not r["locked"]), None)
+    for r in rows:
+        r["open_by_default"] = (r["id"] == current)
+    return rows
+
+
+def brief_actions_for(completion: dict, *, editable: bool = False,
+                      changed: bool = False) -> dict:
+    """Save draft / Freeze brief, each with the reason it is enabled or not.
+
+    ``editable`` is true only in the local host (M4); the static snapshot has no
+    way to write anything, so both actions explain themselves instead.
+    """
+    can_freeze = bool(completion.get("complete"))
+    blockers = completion.get("blocker_count") or 0
+    if not editable:
+        save_reason = ("No editable values in a static snapshot - start the local "
+                       "host with: python3 -m hornflow.app --run-dir <run dir>")
+    elif changed:
+        save_reason = ("Unsaved changes in the draft; saving records them and the "
+                       "frozen revision stays as it is.")
+    else:
+        save_reason = "Nothing to save yet - no draft value has changed."
+    return {
+        "save_draft": {
+            "label": "Save draft", "enabled": bool(editable and changed),
+            "reason": save_reason,
+        },
+        "freeze_brief": {
+            "label": "Freeze brief", "enabled": bool(editable and can_freeze),
+            "reason": ("Every required answer is present; freezing writes the "
+                       "definition file and records the revision and its input hash."
+                       if can_freeze else
+                       f"{blockers} required answer"
+                       f"{'' if blockers == 1 else 's'} still missing."),
+        },
+    }
+
+
+def _brief_actions(completion: dict) -> dict:
+    return brief_actions_for(completion, editable=False)
+
+
+
+
+
+
 EXPORT_EXTS = (".vips", ".txt", ".csv", ".dat", ".tsv", ".asc")
 
 # deliverables we fingerprint for the artifact list (relative to the run dir)
@@ -251,28 +499,113 @@ def _list_runs(run_dir):
 # ---------------------------------------------------------------------------
 #  section builders
 # ---------------------------------------------------------------------------
-def _questions(state: dict, first_run: bool) -> list:
-    """The five questions, with each field resolved against the run state."""
+def _field_record(f: dict, value, source) -> dict:
+    """One field: presentation + the acceptance rule, computed here and nowhere else."""
+    required = f["name"] not in OPTIONAL_FIELDS
+    if value is None or value == "":
+        status, provenance, confidence = "UNKNOWN", None, None
+    else:
+        status, provenance, confidence = "FIXED", "USER_INPUT", 1.0
+    # The acceptance rule (docs/app-local-multitab.md §7): a value counts only
+    # when it is present, not UNKNOWN, and carries provenance *and* confidence.
+    # Fixed values therefore count only when they are valid and provable, and
+    # UNKNOWN never counts - which is exactly what the old W4 got wrong.
+    accepted = bool(value not in (None, "") and status != "UNKNOWN"
+                    and provenance is not None and confidence is not None)
+    return {
+        "key": f["name"],
+        "label": FIELD_LABELS.get(f["name"], f["name"]),
+        "help": FIELD_HELP.get(f["name"]),
+        "type": f["type"], "unit": f["unit"], "enum": f["enum"],
+        "path": f["path"], "value": value,
+        "required": required,
+        "status": status, "provenance": provenance, "confidence": confidence,
+        "accepted": accepted,
+        "source": source if accepted else None,
+    }
+
+
+def _questions(state: dict, first_run: bool, brief: dict | None = None) -> list:
+    """The five questions: each field resolved from the brief, then the run state.
+
+    Every completion number below is emitted by this function.  The UI renders
+    them; it must never recompute them.
+    """
     out = []
     for group in FIRST_RUN_QUESTIONS:
-        fields, answered = [], 0
+        fields = []
         for f in group["fields"]:
-            value = None if first_run else _lookup(state, f["path"])
-            answered += 1 if value is not None else 0
-            fields.append({
-                "name": f["name"], "type": f["type"], "unit": f["unit"],
-                "enum": f["enum"], "path": f["path"], "value": value,
-                "status": "UNKNOWN" if value is None else "FIXED",
-                "provenance": None if value is None else "USER_INPUT",
-                "confidence": None if value is None else 1.0,
-            })
+            value, source = None, None
+            # Resolution order: the brief by declared path, then the brief by the
+            # field's own key (some required fields - the SPL target, the
+            # envelope - have no run-state path), then the run state by path.
+            # Without the second step those fields could never be answered and a
+            # group could never complete.
+            if brief:
+                if f["path"]:
+                    value = _lookup(brief, f["path"])
+                if value is None:
+                    value = _lookup(brief, f["name"])
+                if value is not None:
+                    source = "brief"
+            if value is None and not first_run and f["path"]:
+                value = _lookup(state, f["path"])
+                if value is not None:
+                    source = "run_state"
+            fields.append(_field_record(f, value, source))
+        req = [f for f in fields if f["required"]]
+        done = [f for f in req if f["accepted"]]
         out.append({
             "id": group["id"], "prompt": group["prompt"], "wave": group["wave"],
             "required": group["required"], "why": group["why"],
-            "fields": fields, "fields_total": len(fields), "fields_answered": answered,
-            "blocking": bool(group["required"] and answered < len(fields) and first_run),
+            "fields": fields,
+            "fields_total": len(fields),
+            "fields_answered": sum(1 for f in fields if f["accepted"]),
+            "required_total": len(req), "required_answered": len(done),
+            "complete": bool(req) and len(done) == len(req),
+            "blocked_by": [f["key"] for f in req if not f["accepted"]],
+            "blocking": bool(group["required"]) and len(done) != len(req),
+            "first_unanswered": next((f["key"] for f in req if not f["accepted"]), None),
         })
     return out
+
+
+def _completion(questions: list, *, run_exists: bool) -> dict:
+    """Completion and blocker counts - the single source the UI renders.
+
+    Rules (docs/app-local-multitab.md §7): a group is COMPLETE only when every
+    *required* field is accepted; a wave is COMPLETE only when every required
+    group in it is complete; empty optional fields never block; UNKNOWN never
+    counts as answered.
+    """
+    waves: dict = {}
+    for wave in sorted({q["wave"] for q in questions}):
+        groups = [q for q in questions if q["wave"] == wave]
+        req = [g for g in groups if g["required"]]
+        waves[wave] = {
+            "groups": [g["id"] for g in groups],
+            "required_groups": len(req),
+            "complete_groups": sum(1 for g in req if g["complete"]),
+            "complete": bool(req) and all(g["complete"] for g in req),
+            "blocked_by": [g["id"] for g in req if not g["complete"]],
+        }
+    req_fields = [f for q in questions for f in q["fields"] if f["required"]]
+    blockers = [{"group": q["id"], "field": f["key"], "label": f["label"]}
+                for q in questions for f in q["fields"]
+                if f["required"] and not f["accepted"]]
+    return {
+        "run_exists": run_exists,
+        "waves": waves,
+        "wave_a_complete": bool((waves.get("A") or {}).get("complete")),
+        "groups_total": len(questions),
+        "groups_complete": sum(1 for q in questions if q["complete"]),
+        "required_fields_total": len(req_fields),
+        "required_fields_answered": sum(1 for f in req_fields if f["accepted"]),
+        "blockers": blockers,
+        "blocker_count": len(blockers),
+        "next_required_field": (blockers[0] if blockers else None),
+        "complete": bool(req_fields) and not blockers,
+    }
 
 
 def _gates(stages: dict, logs: dict) -> list:
@@ -399,7 +732,9 @@ def _decided(state: dict) -> bool:
 
 
 
-def _current_state(state: dict, bem_state: str, gates: list, questions: list) -> dict:
+def _current_state(state: dict, bem_state: str, gates: list, questions: list,
+                   completion: dict | None = None,
+                   stages: list | None = None) -> dict:
     run = state.get("run") or {}
     validation = state.get("validation") or {}
     bem = validation.get("bem_manual") or {}
@@ -407,6 +742,8 @@ def _current_state(state: dict, bem_state: str, gates: list, questions: list) ->
     failed = [g["stage"] for g in gates if g["status"] in ("failed", "blocked")]
     assumptions = sum(1 for q in questions for f in q["fields"]
                       if f["provenance"] in ("DEFAULT", "ESTIMATED"))
+    comp = completion or {}
+    current = next((r for r in (stages or []) if r.get("open_by_default")), None)
     return {
         "brief_revision": (validation.get("brief") or {}).get("revision"),
         "input_hash": (validation.get("brief") or {}).get("input_hash"),
@@ -422,6 +759,19 @@ def _current_state(state: dict, bem_state: str, gates: list, questions: list) ->
         "solver_label": "AKABAK Free 3.3.2 b144" if bem else None,
         "assumptions": assumptions,
         "warnings": len(bem.get("warnings") or []),
+        # completion is emitted by the model, never derived in the browser
+        "questions_complete": comp.get("complete"),
+        "required_fields_total": comp.get("required_fields_total"),
+        "required_fields_answered": comp.get("required_fields_answered"),
+        "blocker_count": comp.get("blocker_count"),
+        "wave_a_complete": comp.get("wave_a_complete"),
+        # the stage the UI opens by default, and the single next action's owner
+        "current_stage": (None if current is None else
+                          {"id": current["id"], "name": current["name"],
+                           "status": current["status"],
+                           "order": current["order"]}),
+        "stages_complete": sum(1 for r in (stages or []) if r.get("complete")),
+        "stages_total_workflow": len(stages or []),
     }
 
 
@@ -574,12 +924,19 @@ def build_view(state, *, run_dir=None, brief=None, now=None, export_dir=None,
     run_rec = s.get("run") or {}
     validation = s.get("validation") or {}
     bem = validation.get("bem_manual") or {}
+    validation = s.get("validation") or {}
+    accepted_unvalidated = validation.get("accepted_unvalidated") is True
     bem_state = str(bem.get("state") or "INPUTS_GENERATED")
     first_run = not run_rec.get("run_id")
 
     log_map = logs if logs is not None else _read_logs(run_dir)
     gates = _gates(s.get("stages") or {}, log_map)
-    questions = _questions(s, first_run)
+    brief_in = brief if brief is not None else (s.get("requirements") or {})
+    questions = _questions(s, first_run, brief_in)
+    completion = _completion(questions, run_exists=not first_run)
+    stages = _workflow_stages(questions, gates, run_exists=not first_run,
+                              bem_open=bem_state in BEM_OPEN)
+    brief_actions = _brief_actions(completion)
     exp_dir = export_dir
     if exp_dir is None and run_dir is not None:
         exp_dir = Path(run_dir) / "deliverables" / "bem" / "export"
@@ -607,11 +964,19 @@ def build_view(state, *, run_dir=None, brief=None, now=None, export_dir=None,
             "input_hash": (validation.get("brief") or {}).get("input_hash"),
             "runs_available": list(runs),
         },
-        "current_state": _current_state(s, bem_state, gates, questions),
+        # a persistent, non-dismissable warning: an unvalidated result was accepted
+        "unvalidated_accepted": accepted_unvalidated,
+        "current_state": _current_state(s, bem_state, gates, questions, completion,
+                                        stages),
         "next_action": _next_action(mode, gates, questions, bem_state, outcome,
                                     import_panel),
         "gates": gates,
         "questions": questions,
+        "completion": completion,
+        "workflow_stages": stages,
+        "brief_actions": brief_actions,
+        # the fixed reason list the UI offers when a result is accepted unvalidated
+        "accept_reasons": list(ACCEPT_REASONS),
         "manual_bem": manual,
         "import_panel": import_panel,
         "outcome": outcome,
@@ -625,7 +990,7 @@ def build_view(state, *, run_dir=None, brief=None, now=None, export_dir=None,
             "features": {"dimensions": True, "units": "m", "mm_toggle": True,
                          "compare": False, "reference_glb": None},
         },
-        "brief": brief if brief is not None else (s.get("requirements") or {}),
+        "brief": brief if brief is not None else brief_in,
     }
 
 

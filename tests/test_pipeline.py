@@ -14,6 +14,7 @@ sys.path.insert(0, str(ROOT))
 
 from hornflow.workflow import run_pipeline, Stage                          # noqa: E402
 from hornflow.workflow.stages import STAGE_ORDER, ready                    # noqa: E402
+from hornflow.domain.state import SCHEMA_VERSION                           # noqa: E402
 
 EXAMPLE = ROOT / "params" / "horn_jbl_1200b.yaml"
 
@@ -58,10 +59,13 @@ def test_state_is_valid_and_reloadable(tmp_path):
     s = _run(tmp_path)
     from hornflow.io.state_store import load_state_file
     st = load_state_file(Path(s["run_dir"], "state.json"))
-    assert st.schema_version == "1.0"
+    assert st.schema_version == SCHEMA_VERSION
     assert st.stage_status("REPORT_AND_EXPORT") == "passed"
     assert len(st.fold_candidates) >= 3
     assert st.simulation_runs
+    # the normalized run schema carries both excursion conventions
+    assert "excursion_rms_m" in st.simulation_runs[0]
+    assert "excursion_peak_m" in st.simulation_runs[0]
 
 
 def test_hard_gate_blocks_when_volume_limit_tight(tmp_path):

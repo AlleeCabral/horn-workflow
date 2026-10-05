@@ -171,7 +171,8 @@ def _render_sections(ctx: dict) -> str:
                  f"mean {_fsig(m.get('spl_mean_db'),1)} dB, "
                  f"variation {_fsig(m.get('spl_variation_db'),1)} dB, "
                  f"Zmin {_fsig(m.get('ze_min_ohm'),2)} ohm, "
-                 f"excursion {_fsig(m.get('excursion_max_mm'),3)} mm")
+                 f"excursion {_fsig(m.get('excursion_rms_mm'),3)} mm rms / "
+                 f"{_fsig(m.get('excursion_peak_mm'),3)} mm peak")
     L += [""]
     L += [_render_tail(ctx)]
     return "\n".join(L)
@@ -207,7 +208,7 @@ def _render_tail(ctx: dict) -> str:
                  f"{_fsig(d.get('spl_mean_db_delta'),2)} | "
                  f"{_fsig(d.get('spl_variation_db_delta'),2)} | "
                  f"{_fsig(d.get('cutoff_minus3db_hz_delta'),1)} | "
-                 f"{_fsig(d.get('excursion_max_mm_delta'),4)} | "
+                 f"{_fsig(d.get('excursion_peak_mm_delta'),4)} | "
                  f"{_fsig(d.get('envelope_m3_delta'),4)} |")
     L += ["", "_d = relaxed - base. Do not relax a limit unless the benefit is "
           "meaningful._", ""]

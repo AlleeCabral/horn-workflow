@@ -190,3 +190,79 @@ The pipeline CLI detects an export folder that lives inside a run directory and
 * **Spiral / serpentine / 3-D folds** - extension points exist
   (`fold/generators.py`, `fold/paths.py`); straight, J and U are wired.
 
+## Schema migrations applied in this milestone
+
+### curves.csv v1 -> v2 (header-based, in memory)
+
+v1 header: `... I_abs, excursion_peak_mm, p_abs_Pa, spl_db, di_db` (11 columns).
+The column called `excursion_peak_mm` held **rms** displacement.
+
+v2 header: `... I_abs, excursion_rms_mm, excursion_peak_mm, p_abs_Pa, spl_db, di_db`
+(12 columns). `excursion_peak_mm = sqrt(2) x excursion_rms_mm`.
+
+`report.read_csv()` returns a `CurveTable` with `schema`, `migrated_from` and
+`notes`. A v1 file is renamed in memory — **the numbers are never reinterpreted and
+the file on disk is never rewritten**. `tests/test_excursion_convention.py` covers
+detection, the values, and v1/v2 agreement.
+
+### state.json 1.0 -> 1.1 (registered migration)
+
+`simulation_runs[].excursion_m` (rms values under a peak-sounding name) becomes
+`excursion_rms_m` plus a derived `excursion_peak_m`. The applied migration is
+recorded in the new `state.migrations` list, so it is explicit and inspectable
+rather than silent. `hornflow/domain/state.py` refuses any version with no
+registered path forward.
+
+### view_schema 1.1 -> 1.2 (the Workflow stages)
+
+1.2 adds to `app_view.json`: `completion` (per-field `accepted`, per-group and
+per-wave completion, a flat `blockers` list, `next_required_field`),
+`workflow_stages` (the nine progressive stages with status, counts, lock reason and
+`open_by_default`), `brief_actions`, and `current_stage` inside `current_state`.
+Field records in 1.2 carry `key`/`label`/`help`/`required`/`accepted`/`source`
+(1.1 had `name`, no labels and no acceptance flag).
+
+The view model is a *derived* artifact - it is regenerated from `state.json`, so
+there is nothing to migrate and no risk of reinterpreting a stored number. A run
+whose `viewer.html` predates 1.2 simply renders the nine-stage tab as a labelled
+"this page has no workflow stages" message with the re-render command; regenerate
+it with `--emit-ui` and it picks up the new schema.
+
+### view_schema 1.2 -> 1.3 (the local host and the manual loop)
+
+1.3 adds to `app_view.json`: per-stage `manual_open` and `note` (an open manual BEM
+loop keeps *Verification and AKABAK* `in_progress` - ADR-0015), `accept_reasons`,
+and, when the page is served by the local host, `live`, `definitions`, `runs`,
+`brief_draft` and `brief_actions`. The same renderer handles both: a snapshot simply
+has `host: "snapshot"` and no `live` block, and every mutating action degrades to a
+copyable command.
+
+### The brief: new local files, deliberately outside the repo
+
+M4 introduces three files, all under the git-ignored `.hornflow/` directory:
+
+| file | what it holds |
+|---|---|
+| `.hornflow/brief.draft.yaml` | the editable draft (what the user has typed) |
+| `.hornflow/brief.yaml` | the frozen record: revision, `input_hash`, timestamp, author, what it applied, its warnings and its limits |
+| `.hornflow/generated/<slug>.yaml` | the definition file a run loads |
+
+The generated definition is a **copy of an existing definition with a `brief:` block
+added**, so `config.py` and the pipeline are unchanged and `python3 run_workflow.py
+.hornflow/generated/<slug>.yaml` works directly. `freeze()` writes it to a staging
+name, runs the real `config.load()` on it, and only then renames it into place: a
+freeze that would produce an unloadable definition is refused and leaves nothing
+behind. `draft()` overlays the draft on the frozen record, so after a freeze the
+current brief is still visible without re-typing it.
+
+Nothing here reinterprets an existing project: a project with no `.hornflow/` has an
+empty brief, and the pipeline path is untouched.
+
+### Deliberate baseline regeneration (once)
+
+`tests/fixtures/baseline/{manifest.json,jbl_1200b_curves.csv}` were regenerated for
+the header change. Every physical metric is unchanged (`spl_band_mean_db` 104.5344,
+`spl_band_variation_db` 8.0293, `ze_min_ohm` 4.0424, ...); the manifest now records
+`excursion_rms_max_mm` = 0.54858 alongside `excursion_peak_max_mm` = 0.77581
+(= 0.54858 x sqrt(2)), plus the `curves_schema` and `state_schema` it belongs to.
+

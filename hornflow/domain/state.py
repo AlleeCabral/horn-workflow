@@ -17,7 +17,44 @@ from typing import Any, Callable
 from .evidence import now_utc
 from .limits import LimitImpact
 
-SCHEMA_VERSION = "1.0"
+SCHEMA_VERSION = "1.1"
+
+
+# --------------------------------------------------------------------------- #
+#  schema 1.0 -> 1.1 : the excursion column was named as if it were peak
+# --------------------------------------------------------------------------- #
+# In 1.0 ``simulation_runs[].excursion_m`` held **rms** displacement (the solver
+# is driven in volts rms) under a name that implied peak travel.  The values are
+# correct and are left exactly as they were; only the name changes, and the
+# derived one-way peak column is added.  See hornflow.domain.excursion.
+EXCURSION_MIGRATION_NOTE = (
+    "simulation_runs[].excursion_m held rms displacement under a name that "
+    "implied peak. Renamed to excursion_rms_m and excursion_peak_m = "
+    "sqrt(2) x rms added; values unchanged (never reinterpreted)."
+)
+
+
+def _migrate_1_0_to_1_1(d: dict) -> dict:
+    """Rename the ambiguous excursion key and derive the explicit peak column."""
+    from .excursion import RMS_TO_PEAK
+
+    out = dict(d)
+    runs = []
+    for run in (out.get("simulation_runs") or []):
+        run = dict(run)
+        if "excursion_m" in run:
+            rms = run.pop("excursion_m")
+            run["excursion_rms_m"] = rms
+            if isinstance(rms, list):
+                run["excursion_peak_m"] = [RMS_TO_PEAK * float(v) for v in rms]
+        runs.append(run)
+    out["simulation_runs"] = runs
+    mig = list(out.get("migrations") or [])
+    mig.append({"from_schema": "1.0", "to_schema": "1.1",
+                "detail": EXCURSION_MIGRATION_NOTE})
+    out["migrations"] = mig
+    out["schema_version"] = "1.1"
+    return out
 
 
 def _ser(obj: Any) -> Any:
@@ -32,7 +69,8 @@ def _ser(obj: Any) -> Any:
 
 # Top-level fields, in the order the spec lists them (plus ``stages``).
 STATE_FIELDS = (
-    "schema_version", "run", "project", "requirements", "driver", "constraints",
+    "schema_version", "migrations", "run", "project", "requirements", "driver",
+    "constraints",
     "limit_impacts", "feasibility", "architecture_candidates",
     "acoustic_candidates", "reference_profiles", "fold_candidates",
     "simulation_runs", "sensitivity_runs", "manufacturing_variants",
@@ -44,6 +82,7 @@ STATE_FIELDS = (
 @dataclass
 class DesignState:
     schema_version: str = SCHEMA_VERSION
+    migrations: list = field(default_factory=list)   # applied state migrations
     run: dict = field(default_factory=dict)
     project: dict = field(default_factory=dict)
     requirements: dict = field(default_factory=dict)
@@ -111,7 +150,9 @@ class DesignState:
 # version -> function(state_dict) -> state_dict at the NEXT version.
 # Populated as the schema evolves.  Loading a version with no path to the
 # current one must fail loudly.
-MIGRATIONS: dict[str, Callable[[dict], dict]] = {}
+MIGRATIONS: dict[str, Callable[[dict], dict]] = {
+    "1.0": _migrate_1_0_to_1_1,
+}
 
 
 def load_state(d: dict) -> DesignState:
