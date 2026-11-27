@@ -259,6 +259,108 @@ def test_stage_one_loads_the_snapshot_it_wrote(tmp_path, monkeypatch):
     assert seen[0] == Path(s["run_dir"]) / "inputs" / "definition.yaml"
 
 
+# ------------------------------------------------------------------- scoring
+def test_tie_is_reported_as_no_acoustic_winner(pipeline_run):
+    """Two horns with identical 1-D metrics are a tie, not a winner (P1, D4)."""
+    from hornflow.io.state_store import load_state_file
+
+    st = load_state_file(pipeline_run / "state.json")
+    finding = {f["check"]: f for f in st.critic_findings}["preference_not_decisive"]
+    assert finding["passed"] is False
+    assert finding["severity"] == "reject"
+    report = (pipeline_run / "deliverables" / "report.md").read_text(encoding="utf-8")
+    assert "No acoustic winner" in report
+    assert "is also the best overall design" not in report
+
+
+def test_a_point_five_gap_is_never_reordered_by_the_bonus():
+    """The bonus may only break a tie: a 0.5-point lead stays with the data (D4).
+
+    Probe from the review: a folded horn 1.0 point behind the raw leader won the
+    reported order, and the report still called it the best overall design.
+    """
+    from hornflow.architecture import registry
+    from hornflow.critique import critic
+    from hornflow.reporting import markdown
+
+    scores = registry.score([
+        _Scored("folded_horn", 92.0, 0.0, True),
+        _Scored("sealed_box", 92.7, 0.0, True),
+    ])
+    assert [s["architecture_id"] for s in scores] == ["sealed_box", "folded_horn"]
+    assert scores[1]["preference_bonus"] == 0.0
+    assert scores[1]["score"] == pytest.approx(92.0)
+    assert registry.decisive_winner(scores) == "sealed_box"
+    assert critic._preference_check(scores).passed is True
+    report = markdown.render(_ctx(scores))
+    assert "is also the best overall design" not in report
+    assert "**not** the best overall design" in report
+
+
+def test_the_preference_bonus_is_one_point_on_the_db_scale():
+    """The bonus is a tie-breaker, not a 5-point head start (D4)."""
+    from hornflow.architecture import registry
+
+    scores = registry.score([
+        _Scored("sealed_box", 91.4, 0.0, True),
+        _Scored("folded_horn", 91.0, 0.0, True),
+    ])
+    assert registry.PREFERENCE_BONUS == {"folded_horn": 1.0}
+    assert registry.TIE_TOLERANCE_POINTS == 0.5
+    # inside the tolerance the bonus flips the reported order, and only by one point
+    assert [s["architecture_id"] for s in scores] == ["folded_horn", "sealed_box"]
+    assert scores[0]["raw_score"] == pytest.approx(91.0)
+    assert scores[0]["score"] == pytest.approx(92.0)
+    # the acoustic evidence cannot separate them, so the run reports a tie
+    assert registry.decisive_winner(scores) is None
+
+
+def test_no_feasible_candidate_is_said_plainly():
+    """Zero feasible candidates is not a tie between two blank names (P1)."""
+    from hornflow.architecture import registry
+    from hornflow.critique import critic
+    from hornflow.reporting import markdown
+
+    scores = registry.score([
+        _Scored("folded_horn", 92.0, 4.0, False),
+        _Scored("sealed_box", 88.0, 5.0, False),
+    ])
+    finding = critic._preference_check(scores)
+    assert finding.passed is False
+    assert finding.severity == "reject"
+    assert "no feasible candidate" in finding.detail.lower()
+    assert "score within" not in finding.detail
+    report = markdown.render(_ctx(scores))
+    assert "no feasible candidate" in report.lower()
+    assert "score within" not in report
+
+
+class _Params:
+    """The few report fields a scoring probe needs."""
+
+    project = "scoring probe"
+    source_path = "definition.yaml"
+
+
+def _ctx(scores):
+    """The report context for a scored list, in the shape the orchestrator passes."""
+    return {"schema_version": "1.2", "run_id": "probe", "params": _Params(),
+            "scores": scores, "best_overall": scores[0] if scores else None}
+
+
+class _Scored:
+    """A minimal ArchitectureResult stand-in for the scoring unit test."""
+
+    def __init__(self, architecture_id, spl_mean_db, spl_variation_db, feasible):
+        self.architecture_id = architecture_id
+        self.display_name = architecture_id
+        self.fidelity = "ONE_DIMENSIONAL"
+        self.feasible = feasible
+        self.implementation = "wired"
+        self.metrics = {"spl_mean_db": spl_mean_db,
+                        "spl_variation_db": spl_variation_db}
+
+
 if __name__ == "__main__":
     import pytest
     raise SystemExit(pytest.main([__file__, "-q"]))

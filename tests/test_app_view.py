@@ -569,6 +569,11 @@ def test_view_model_survives_a_full_import_cycle(tmp_path):
     assert after["current_state"]["bem_state"] == "BEM_VALIDATED"
     assert after["mode"] == "review"
     assert after["outcome"]["checks"] and after["outcome"]["metrics"]
+    # the two horns tie, so the critic rejects the preference-decided winner, and
+    # the report says so; the decision is still the owner's next step (D4)
+    critic = {c["check"]: c for c in after["outcome"]["critic"]}
+    assert critic["preference_not_decisive"]["passed"] is False
+    assert critic["preference_not_decisive"]["severity"] == "reject"
     assert after["next_action"]["label"] == "Mark decided"
 
 

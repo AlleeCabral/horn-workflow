@@ -67,18 +67,32 @@ def review(state, *, gates, runs, fold_candidates, variants, scores) -> list:
 
 
 def _preference_check(scores) -> Finding:
+    from ..architecture.registry import TIE_TOLERANCE_POINTS, decisive_winner
+
     if not scores:
         return Finding("preference_not_decisive", True, "no scored candidates")
-    by_raw = sorted(scores, key=lambda s: -(s["score"] - 100.0 * s["preference_bonus"]))
-    by_bonus = sorted(scores, key=lambda s: -s["score"])
-    raw_win = by_raw[0]["architecture_id"]
-    bonus_win = by_bonus[0]["architecture_id"]
-    if bonus_win == "folded_horn" and raw_win != "folded_horn":
+    feasible = [s for s in scores if s.get("feasible")]
+    if not feasible:
+        return Finding(
+            "preference_not_decisive", False,
+            f"no feasible candidate: all {len(scores)} scored architecture(s) were "
+            "rejected by the hard gates", "reject")
+    winner = scores[0]["architecture_id"]          # the reported order, bonus included
+    decisive = decisive_winner(scores)
+    if decisive is None:
+        top = sorted(feasible, key=lambda s: -(s.get("raw_score") or 0.0))[:2]
+        names = [s["architecture_id"] for s in top]
+        return Finding(
+            "preference_not_decisive", False,
+            f"no acoustic winner: {names[0]} and {names[1]} score within "
+            f"{TIE_TOLERANCE_POINTS} points, so {winner} leads by preference only",
+            "reject")
+    if winner != decisive:
         return Finding("preference_not_decisive", False,
-                       f"folded horn wins only with the preference bonus "
-                       f"(uncorrected winner: {raw_win})", "warning")
+                       f"{winner} wins only with the preference bonus "
+                       f"(uncorrected winner: {decisive})", "reject")
     return Finding("preference_not_decisive", True,
-                   f"winner {bonus_win} also wins without the bonus")
+                   f"winner {winner} also wins without the bonus")
 
 
 def rejected(findings) -> bool:

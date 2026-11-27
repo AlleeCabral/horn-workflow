@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from ..architecture.registry import TIE_TOLERANCE_POINTS as _TIE_TOLERANCE_POINTS
+from ..architecture.registry import decisive_winner as _decisive_winner
 from . import limit_impact
 
 EV = "evidence"
@@ -38,17 +40,30 @@ def render(ctx: dict) -> str:
     else:
         L.append("* **Best folded horn:** none produced.")
     if best_overall:
-        L.append(f"* **Best overall architecture:** {best_overall.get('display_name')} "
-                 f"(`{best_overall.get('architecture_id')}`, "
-                 f"{best_overall.get('fidelity')}).")
-        L.append(f"* Reasons: weighted score {_fsig(best_overall.get('score'))} "
-                 f"(mean SPL {_fsig(best_overall.get('spl_mean_db'),1)} dB, "
-                 f"variation {_fsig(best_overall.get('spl_variation_db'),1)} dB).")
-        if best_overall.get("architecture_id") == "folded_horn":
-            L.append("* The folded horn is also the best overall design here.")
+        feasible = [s for s in scores if s.get("feasible")]
+        if not feasible:
+            L.append("* **Best overall architecture:** none - no feasible candidate "
+                     "passed the hard gates, so there is nothing to recommend.")
         else:
-            L.append("* The folded horn is **not** the best overall design for these "
-                     "constraints; both results are reported below.")
+            L.append(f"* **Best overall architecture:** {best_overall.get('display_name')} "
+                     f"(`{best_overall.get('architecture_id')}`, "
+                     f"{best_overall.get('fidelity')}).")
+            L.append(f"* Reasons: weighted score {_fsig(best_overall.get('score'))} "
+                     f"(mean SPL {_fsig(best_overall.get('spl_mean_db'),1)} dB, "
+                     f"variation {_fsig(best_overall.get('spl_variation_db'),1)} dB).")
+            decisive = _decisive_winner(scores)
+            if decisive is None:
+                top = sorted(feasible, key=lambda s: -(s.get("raw_score") or 0.0))[:2]
+                names = [s.get("display_name") for s in top] + ["", ""]
+                L.append(f"* No acoustic winner: {names[0]} and {names[1]} score within "
+                         f"{_TIE_TOLERANCE_POINTS} points; "
+                         f"{best_overall.get('display_name')} is listed first by "
+                         "preference only.")
+            elif best_overall.get("architecture_id") == "folded_horn" == decisive:
+                L.append("* The folded horn is also the best overall design here.")
+            else:
+                L.append("* The folded horn is **not** the best overall design for these "
+                         "constraints; both results are reported below.")
     L += ["", "_Evidence: see the labels on every table (USER_INPUT, "
           "ANALYTICAL_ESTIMATE, ONE_DIMENSIONAL_SIMULATION, BEM_SIMULATION)._", ""]
 
