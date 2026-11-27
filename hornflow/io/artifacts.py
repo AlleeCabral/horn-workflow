@@ -14,6 +14,7 @@ from __future__ import annotations
 import json
 import os
 import hashlib
+import tempfile
 from dataclasses import dataclass, asdict
 from pathlib import Path
 
@@ -29,15 +30,27 @@ def sha256_file(path: Path) -> str:
 
 
 def atomic_write(path: Path, data: bytes) -> None:
-    """Write bytes to ``path`` atomically (same-directory temp + rename)."""
+    """Write bytes to ``path`` atomically (same-directory temp + rename).
+
+    The temporary name must be unique per call, not per process: with a
+    ``<name>.tmp.<pid>`` temp name two threads of one process shared a path, one
+    renamed it away and the other died in ``os.replace`` with
+    ``FileNotFoundError`` (audit S1).
+    """
     path = Path(path)
     path.parent.mkdir(parents=True, exist_ok=True)
-    tmp = path.with_name(path.name + f".tmp.{os.getpid()}")
-    with open(tmp, "wb") as fh:
-        fh.write(data)
-        fh.flush()
-        os.fsync(fh.fileno())
-    os.replace(tmp, path)
+    fd, tmp_name = tempfile.mkstemp(dir=path.parent, prefix=path.name + ".",
+                                    suffix=".tmp")
+    tmp = Path(tmp_name)
+    try:
+        with os.fdopen(fd, "wb") as fh:
+            fh.write(data)
+            fh.flush()
+            os.fsync(fh.fileno())
+        os.replace(tmp, path)
+    except BaseException:
+        tmp.unlink(missing_ok=True)
+        raise
 
 
 @dataclass

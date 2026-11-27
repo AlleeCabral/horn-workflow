@@ -1,6 +1,9 @@
 name: checks
 
 # main must always be green: 147/147 legacy checks + the pytest suite.
+# The pytest suite is self contained: tests/conftest.py runs the shipped example
+# into a temporary folder, so no runs/ directory has to exist in the checkout.
+# Step order is unchanged; nothing has to run before pytest any more.
 on:
   push:
     branches: [main]

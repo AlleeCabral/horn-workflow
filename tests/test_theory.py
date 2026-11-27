@@ -23,15 +23,23 @@ ROOT = Path(__file__).resolve().parents[1]
 FAILURES: list[str] = []
 CHECKS = 0
 
+# Under pytest a failed check must fail the test, not only print FAIL (audit T2).
+STRICT = "pytest" in sys.modules
 
-def check(name: str, condition: bool, detail: str = "") -> None:
+
+def check(name: str, condition: bool, detail: str = "",
+          strict: bool | None = None) -> None:
+    """Record one check.  ``strict`` defaults to STRICT: raise on failure."""
     global CHECKS
     CHECKS += 1
-    if condition:
-        print(f"  PASS  {name}" + (f"   [{detail}]" if detail else ""))
-    else:
-        print(f"  FAIL  {name}" + (f"   [{detail}]" if detail else ""))
+    if strict is None:
+        strict = STRICT
+    print(f"  {'PASS' if condition else 'FAIL'}  {name}"
+          + (f"   [{detail}]" if detail else ""))
+    if not condition:
         FAILURES.append(name)
+        if strict:
+            raise AssertionError(name)
 
 
 def close(a: float, b: float, rel: float = 1e-6) -> bool:
