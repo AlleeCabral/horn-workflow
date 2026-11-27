@@ -19,7 +19,8 @@ import pytest
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 
-from conftest import ApiError, copy_exports, load_state_file                       # noqa: E402
+from conftest import (ApiError, copy_exports, load_state_file,               # noqa: E402
+                      update_state)
 from hornflow import bem                                                          # noqa: E402
 from hornflow.physics.solvers import bem_manual, manual                            # noqa: E402
 from hornflow.workflow import bem_import, run_pipeline                             # noqa: E402
@@ -137,11 +138,27 @@ def test_state_machine_is_legal_and_terminal():
 
 
 def test_reimport_edge_is_reachable():
-    from hornflow.workflow.bem_import import _walk_to
+    from hornflow.workflow.bem_import import _path_to
     # a re-import with a different tolerance may supersede a rejection
-    assert _walk_to("BEM_REJECTED", "BEM_VALIDATED") == "BEM_VALIDATED"
-    assert _walk_to("GUI_REQUIRED", "VIPS_IMPORTED") == "VIPS_IMPORTED"
-    assert _walk_to("MANUAL_SOLVE_PENDING", "MANUAL_SOLVE_PENDING") == "MANUAL_SOLVE_PENDING"
+    assert _path_to("BEM_REJECTED", "BEM_VALIDATED") == [
+        "VIPS_IMPORTED", "BEM_COMPARISON_COMPLETED", "BEM_VALIDATED"]
+    assert _path_to("GUI_REQUIRED", "VIPS_IMPORTED") == [
+        "MANUAL_SOLVE_PENDING", "MANUAL_SOLVE_COMPLETED", "VIPS_IMPORTED"]
+    assert _path_to("MANUAL_SOLVE_PENDING", "MANUAL_SOLVE_PENDING") == []
+    # the relaxed-tolerance acceptance is reachable and can be superseded too
+    assert _path_to("BEM_ACCEPTED_WITH_TOLERANCE", "BEM_VALIDATED") == [
+        "VIPS_IMPORTED", "BEM_COMPARISON_COMPLETED", "BEM_VALIDATED"]
+
+
+def test_unknown_state_and_unreachable_target_are_errors():
+    from hornflow.workflow.bem_import import _path_to
+    with pytest.raises(ValueError, match="unknown manual-solve state"):
+        _path_to("WHATEVER", "BEM_VALIDATED")
+    with pytest.raises(ValueError, match="unknown manual-solve state"):
+        _path_to("GUI_REQUIRED", "MADE_UP")
+    # a decided state has no legal way back to "re-export and retry"
+    with pytest.raises(ValueError, match="no legal route"):
+        _path_to("BEM_VALIDATED", "MANUAL_SOLVE_PENDING")
 
 
 def test_illegal_transition_is_rejected():
@@ -621,6 +638,91 @@ def test_cli_bad_tolerance_is_one_error_line(run_copy, capsys):
     err = capsys.readouterr().err.strip().splitlines()
     assert rc == 2
     assert err and err[0].startswith("error:")
+
+
+# --------------------------------------------------------------------------- #
+#  attempt history and strict transitions (audit B2, Phase 0 Task 5)
+# --------------------------------------------------------------------------- #
+def test_failed_reimport_keeps_last_accepted_result(run_copy, tmp_path):
+    exp = copy_exports(run_copy)
+    first = bem_import.import_into_run(run_copy, exp, tolerance_db=12.0)
+    # D1: 12 dB is above the default, so the accepted state is the relaxed one
+    assert first["state"] == "BEM_ACCEPTED_WITH_TOLERANCE"
+    stored = first["stored_state"]
+    junk = tmp_path / "junk"
+    junk.mkdir()
+    (junk / "x.vips").write_text("")
+    second = bem_import.import_into_run(run_copy, junk, tolerance_db=12.0)
+    rec = load_state_file(run_copy / "state.json").validation["bem_manual"]
+    assert rec["state"] == stored                      # whatever the first one was
+    assert rec["metrics"] == first["metrics"]
+    assert rec["attempts"][-1]["passed"] is False
+    assert len(rec["attempts"]) == 2
+    assert second["attempt_passed"] is False
+    assert second["stored_state"] == stored
+
+
+def test_unknown_stored_state_is_an_error(run_copy):
+    update_state(run_copy / "state.json",
+                 lambda st: st.validation.setdefault("bem_manual", {}).update(state="WHATEVER"))
+    with pytest.raises(ValueError, match="unknown manual-solve state"):
+        bem_import.import_into_run(run_copy, copy_exports(run_copy))
+
+
+def test_failed_attempt_does_not_overwrite_the_accepted_report(run_copy, tmp_path):
+    """Review of #11: a junk re-import must not replace the accepted report."""
+    exp = copy_exports(run_copy)
+    bem_import.import_into_run(run_copy, exp, tolerance_db=12.0)
+    report_path = run_copy / "deliverables" / "bem" / "bem_manual_report.md"
+    accepted = report_path.read_text()
+    assert "Comparison with the 1-D reference" in accepted
+
+    junk = tmp_path / "junk"
+    junk.mkdir()
+    (junk / "x.vips").write_text("")
+    bem_import.import_into_run(run_copy, junk, tolerance_db=12.0)
+
+    assert report_path.read_text() == accepted          # the accepted report stands
+    rec = load_state_file(run_copy / "state.json").validation["bem_manual"]
+    failed = rec["attempts"][-1]["report"]
+    assert not Path(failed).is_absolute(), "state.json must not carry absolute paths"
+    assert (run_copy / failed).is_file()
+    # a failed attempt names its failure and the run state, never a state of its own
+    text = (run_copy / failed).read_text()
+    assert "This attempt: failed" in text
+    assert "MANUAL_SOLVE_PENDING" not in text
+    # every accepted report is archived too, so an older attempt link stays valid
+    first = rec["attempts"][0]
+    assert (run_copy / first["archive"]).is_file()
+    assert "This attempt: passed" in (run_copy / first["archive"]).read_text()
+
+
+def test_export_hashes_fingerprint_nested_files(run_copy):
+    """Review of #11: the validator reads recursively, so the hashes must too."""
+    exp = copy_exports(run_copy)
+    sub = exp / "sub"
+    sub.mkdir()
+    for p in sorted(exp.glob("*.vips")):
+        p.replace(sub / p.name)
+    bem_import.import_into_run(run_copy, exp, tolerance_db=12.0)
+    rec = load_state_file(run_copy / "state.json").validation["bem_manual"]
+    hashes = rec["attempts"][-1]["files_sha256"]
+    assert hashes, "a nested export must still be fingerprinted"
+    assert all(k.startswith("sub/") for k in hashes), sorted(hashes)
+    assert len(hashes) == len(list(sub.glob("*.vips")))
+
+
+def test_cli_prints_the_stored_state_and_the_attempt_result(run_copy, capsys):
+    """Review of #11: "the manual-solve state" must be what state.json holds."""
+    from hornflow.cli import main
+    export = run_copy / "deliverables" / "bem" / "export"
+    export.mkdir(parents=True, exist_ok=True)            # empty, so the import fails
+    rc = main([str(EXAMPLE), "--bem-import", str(export)])
+    out = capsys.readouterr().out
+    assert rc == 1
+    assert "manual-solve state: GUI_REQUIRED" in out
+    assert "attempt: failed" in out
+    assert "MANUAL_SOLVE_PENDING" not in out
 
 
 # --------------------------------------------------------------------------- #
