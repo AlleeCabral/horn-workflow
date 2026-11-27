@@ -41,7 +41,7 @@
 
 - **Group A (persistence and app):** Tasks 1 to 8, 13, 14.
 - **Group B (physics and report):** Tasks 9 to 12.
-- **Task 15:** owner decisions.
+- **Task 15:** the excursion safety gate at the decided drive level and band (D2, decided 2026-11-27; D1 and D4 are settled inside Tasks 6 and 9).
 
 Tasks 1 and 2 come first; Group A and Group B can then run in parallel (`superpowers:dispatching-parallel-agents`). Task 15 can happen any time before the pull request merges.
 
@@ -287,7 +287,8 @@ def test_unknown_stored_state_is_an_error(pipeline_run):
 
 **Interfaces:**
 - Produces:
-  - `TOLERANCE_RANGE_DB = (0.5, 20.0)` and `DEFAULT_TOLERANCE_DB = 6.0` in `bem_manual.py` (D1 placeholder).
+  - `TOLERANCE_RANGE_DB = (0.5, 20.0)` and `DEFAULT_TOLERANCE_DB = 6.0` in `bem_manual.py`. Decision D1, final on 2026-11-27.
+  - A tolerance above `DEFAULT_TOLERANCE_DB` never produces `BEM_VALIDATED`. It produces the new state `BEM_ACCEPTED_WITH_TOLERANCE`, and `validation.relaxed_tolerance` is true. The acceptance is real and honest: the report states the tolerance that was granted. D1 puts this state here rather than in Task 14 because Task 6 is where the state is decided.
   - `ApiError("tolerance_out_of_range", status=400)`. `tolerance_db=None` means the manifest value, then the default; `0` is out of range, not 6.
   - Checks `belongs_to_run` and `run_manifest_matches` are `HARD`.
   - `belongs_to_run` passes only when every file's `Graph_Group` equals `manifest.expected_graph_group`. When that is `None`, all files must share one `Graph_Group`, and the check records it into the manifest on the first accepted import.
@@ -305,6 +306,12 @@ def test_tolerance_out_of_range_is_refused(project, tol):
     with pytest.raises(ApiError) as e:
         a.import_vips(run_id=a.run_dir.name, tolerance_db=tol)
     assert e.value.code == "tolerance_out_of_range"
+
+def test_relaxed_tolerance_never_validates(pipeline_run):
+    exp = copy_exports(pipeline_run)                        # a good Rad1 export set
+    res = import_into_run(pipeline_run, exp, tolerance_db=12.0)
+    assert res["state"] == "BEM_ACCEPTED_WITH_TOLERANCE"
+    assert res["validation"]["relaxed_tolerance"] is True
 
 def test_mixed_projects_fail_provenance(pipeline_run):
     exp = copy_exports(pipeline_run, "Akabak-*")          # Rad1 and Jbl1200B together
@@ -441,8 +448,8 @@ def test_migration_1_1_to_1_2_keeps_unknown_keys():
 
 **Interfaces:**
 - Produces:
-  - `PREFERENCE_BONUS = {"folded_horn": 1.0}`, now in score points (dB-based), applied as `+ bonus` (no `100 *`). This is a D4 placeholder.
-  - `TIE_TOLERANCE_POINTS = 0.5`.
+  - `PREFERENCE_BONUS = {"folded_horn": 1.0}`, now in score points (dB-based), applied as `+ bonus` (no `100 *`). Decision D4, final on 2026-11-27: the folded horn is a tie-breaker, never a winner on its own.
+  - `TIE_TOLERANCE_POINTS = 0.5` (D4, final).
   - `score()` adds `raw_score` (without bonus) to each entry.
   - `decisive_winner(scores) -> str | None`: the raw-score leader, or `None` when the top two feasible raw scores are within `TIE_TOLERANCE_POINTS`.
   - `_preference_check` fails (severity `"reject"`) when the bonus winner differs from `decisive_winner`, including `None`.
@@ -665,6 +672,7 @@ def test_first_run_page_is_served(tmp_path, live_server_factory):
   - `DECISION_KINDS = {"accept_unvalidated", "accept_validated", "reject_design"}`.
   - `allowed_decisions(bem_state: str | None) -> set[str]`:
     - `BEM_VALIDATED` → `{"accept_validated", "reject_design"}`;
+    - `BEM_ACCEPTED_WITH_TOLERANCE` → `{"accept_validated", "reject_design"}`, with the outcome label naming the tolerance granted (D1);
     - `BEM_REJECTED`, `GUI_REQUIRED`, `MANUAL_SOLVE_PENDING` → `{"accept_unvalidated", "reject_design"}`;
     - `None` (no BEM) → `{"accept_unvalidated", "reject_design"}`.
   - `is_decided(state) -> bool`: true when the last entry with `event == "decision"` is not superseded.
@@ -712,35 +720,65 @@ def test_ui_never_reads_verdict_field():
 - [ ] **Step 4: Run** the full suite, including the Chrome DOM tests in `tests/test_workflow_ui.py` if Chrome is available. Otherwise record "skipped: no Chrome" in the PR text.
 - [ ] **Step 5: Commit** `fix(app): one decision model; model-owned outcome labels; outputs re-emitted after changes (S8 to S10, S12, U4)`.
 
-### Task 15: Owner decisions D1, D2, D4 (needs-decision)
+### Task 15: The excursion gate at the decided drive level, band and high-pass (audit P8, P9; decision D2)
+
+Decisions D1 (Task 6) and D4 (Task 9) are already applied. This task carries D2 only.
 
 **Files:**
-- Modify: `docs/superpowers/specs/2026-11-26-hornflow-roadmap-design.md` (Open decisions → Decided)
-- Modify, only if the answers differ from the placeholders: `hornflow/physics/solvers/bem_manual.py` (`TOLERANCE_RANGE_DB`, `DEFAULT_TOLERANCE_DB`), `hornflow/architecture/registry.py` (`PREFERENCE_BONUS`, `TIE_TOLERANCE_POINTS`), `hornflow/workflow/gates.py:30-53`
+- Create: `hornflow/physics/highpass.py`
+- Modify: `hornflow/config.py` (`Simulation`: `amp_power_w`, `highpass`, `gate_band`)
+- Modify: `hornflow/workflow/gates.py:30-53` (the excursion gate)
+- Modify: `hornflow/physics/advise.py` or the existing report module where the recommended DSP settings are written
+- Modify: `docs/superpowers/specs/2026-11-26-hornflow-roadmap-design.md` only if the answer differs from what is recorded under "Decided by the owner (2026-11-27)"
+- Test: `tests/test_gates.py` (create if absent), `tests/test_pipeline.py`
 
 **Interfaces:**
-- Produces, for D2: `simulation.gate_voltage: float | None` in `config.Simulation` (default `None`, meaning `simulation.voltage`) and `simulation.gate_band: "passband" | "full"` (default `"passband"`).
-  - `gates.py` evaluates `excursion<=Xmax` at `gate_voltage` (excursion scales linearly with voltage in this linear model: `x * gate_voltage / voltage`), over the chosen band.
-  - It routes through `domain.excursion.excursion_gate`, removing the duplicate logic (audit P9).
-  - `GateResult` gains `measurement: dict` (keys `drive_vrms`, `band`, `peak_mm`, `xmax_one_way_peak_mm`).
-  - The pipeline persists gates as `state.validation["gates"] = [g.to_dict() for g in self.gates]`; today they are not stored in `state.json` at all.
+- Produces in `config.Simulation`:
+  - `amp_power_w: float | None = None`. When `None`, the gate uses `gate_voltage` if it is set, else `voltage`.
+  - `highpass: dict | None = None`, shaped `{"fc_hz": float, "order": int, "type": "butterworth"}`.
+  - `gate_band: str = "passband"`, one of `"passband"` or `"full"`.
+  - Driven power sets the gate voltage: `gate_voltage = sqrt(amp_power_w * z_nominal)`, where `z_nominal` is the driver file's nominal impedance, or `Re` when the file has none. The report states which one was used.
+- Produces in `hornflow/physics/highpass.py`:
+  - `highpass_response(f, fc_hz, order) -> complex ndarray`, a Butterworth high-pass applied to the drive voltage (magnitude and phase), normalised to unity well above `fc_hz`.
+  - `recommend_highpass(params, power_w, orders=(2, 4)) -> list[dict]`, each `{"order": int, "fc_hz": float, "peak_mm": float}`: the lowest corner frequency per order that keeps peak excursion at or below one-way peak Xmax at `power_w`.
+- `gates.py` evaluates `excursion <= Xmax` over `gate_band` at the driven voltage, with the high-pass applied when `Simulation.highpass` is set, and reports a **warning** (not a failure) for the same power over the full range without the high-pass. The warning names the lowest frequency where Xmax is exceeded.
+- It routes through `domain.excursion.excursion_gate`, removing the duplicate logic (audit P9).
+- `GateResult` gains `measurement: dict` (keys `drive_vrms`, `power_w`, `band`, `highpass`, `peak_mm`, `xmax_one_way_peak_mm`).
+- The pipeline persists gates as `state.validation["gates"] = [g.to_dict() for g in self.gates]`; today they are not stored in `state.json` at all.
+- The report gains the recommended DSP settings (`order`, `fc_hz`, `type`) and the maximum SPL reachable at `amp_power_w` within Xmax. Target loudness is not a limit; that number is the answer to "how loud can it go at the event".
 
-- [ ] **Step 1:** Run `superpowers:brainstorming` with the owner on D1, D2 and D4. Record the answers in the spec.
-- [ ] **Step 2: Write the failing test:**
+- [ ] **Step 1:** Confirm the recorded answer in the spec against the request. If it differs, run `superpowers:brainstorming` with the owner and update the spec first.
+- [ ] **Step 2: Write the failing tests:**
 
 ```python
-def test_gate_uses_gate_voltage(tmp_path):
-    p = _copy_def(tmp_path, _set("simulation.gate_voltage", 40.0))
+def test_gate_uses_power_into_nominal_impedance(tmp_path):
+    p = _copy_def(tmp_path, _set("simulation.amp_power_w", 300.0))   # Z_nominal = 8 ohm
     s = run_pipeline(p, out_root=tmp_path / "runs")
     st = load_state_file(Path(s["run_dir"]) / "state.json")
     g = {x["name"]: x for x in st.validation["gates"]}["excursion<=Xmax"]
-    assert g["measurement"]["drive_vrms"] == 40.0
+    assert g["measurement"]["drive_vrms"] == pytest.approx(math.sqrt(300.0 * 8.0), rel=1e-3)
     assert g["measurement"]["band"] == "passband"
+
+def test_recommended_highpass_passes_the_gate(tmp_path):
+    p = _copy_def(tmp_path, _set("simulation.amp_power_w", 300.0))
+    s = run_pipeline(p, out_root=tmp_path / "runs")
+    st = load_state_file(Path(s["run_dir"]) / "state.json")
+    rec = st.validation["highpass_recommendation"]
+    assert {r["order"] for r in rec} == {2, 4}
+    assert all(r["fc_hz"] > 0 and r["peak_mm"] <= 1.0 for r in rec)
+
+def test_without_highpass_the_warning_names_the_frequency(tmp_path):
+    p = _copy_def(tmp_path, _set("simulation.amp_power_w", 300.0))
+    s = run_pipeline(p, out_root=tmp_path / "runs")
+    st = load_state_file(Path(s["run_dir"]) / "state.json")
+    w = {x["name"]: x for x in st.validation["gates"]}["excursion<=Xmax full range (no high-pass)"]
+    assert w["status"] == "warning" and "Hz" in w["detail"]
 ```
 
 - [ ] **Step 3: Run.** Expected: FAIL.
-- [ ] **Step 4: Implement** the gate change and the decided constants.
-- [ ] **Step 5: Run** the full suite. Expected: pass. Then commit `feat(gates): safety gate at the decided drive level and band (P8, D1, D2, D4)`.
+- [ ] **Step 4: Implement** the gate, the high-pass module, the recommendation and the report lines.
+- [ ] **Step 5: Run** the full suite. Expected: pass. Then commit `feat(gates): excursion gate at 300 W with the recommended high-pass (P8, P9, D2)`.
+
 
 ### Task 16: Phase close
 
