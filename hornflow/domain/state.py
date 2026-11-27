@@ -19,6 +19,11 @@ from .limits import LimitImpact
 
 SCHEMA_VERSION = "1.1"
 
+# The run lifecycle.  ``run.status`` is what tells a completed run from one that
+# was interrupted or died mid-stage, which is exactly what used to be missing
+# (audit S6): a crashed run left no state at all, so it looked like no run.
+RUN_STATUSES = ("running", "completed", "failed", "interrupted")
+
 
 # --------------------------------------------------------------------------- #
 #  schema 1.0 -> 1.1 : the excursion column was named as if it were peak
@@ -120,6 +125,12 @@ class DesignState:
 
     def stage_status(self, stage: str) -> str:
         return str(self.stages.get(stage, {}).get("status", "pending"))
+
+    def set_run_status(self, status: str) -> None:
+        """Record how the run is going; an unknown status is a programming error."""
+        if status not in RUN_STATUSES:
+            raise ValueError(f"run status {status!r} is not one of {RUN_STATUSES}")
+        self.run["status"] = status
 
     # ------------------------------------------------------------------ serial
     def to_dict(self) -> dict:

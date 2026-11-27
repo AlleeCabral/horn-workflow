@@ -79,14 +79,37 @@ class Pipeline:
             (Stage.FINAL_COMPARISON, self.stage_final),
             (Stage.REPORT_AND_EXPORT, self.stage_report),
         ]
+        self.state.set_run_status("running")
+        self._save()               # the run is visible (and readable) from the start
         for stage, fn in seq:
             if not ready(stage, self.state.stages):
                 self.state.set_stage(stage.value, "blocked")
                 self.log.log(stage.value, "blocked", severity="warning")
+                self._save()
                 continue
             t0 = time.time()
             self.progress(f"[{stage.value}]")
-            result = fn()
+            try:
+                result = fn()
+            except KeyboardInterrupt:
+                # Ctrl+C leaves a state behind saying it was interrupted, so the
+                # run folder is not an invisible half-written directory (S6).
+                self.state.set_run_status("interrupted")
+                self.log.log(stage.value, "stage_interrupted", severity="warning")
+                self._save()
+                self.log.flush()
+                raise
+            except Exception as exc:                    # noqa: BLE001 - recorded, then raised
+                self.state.set_stage(stage.value, "failed",
+                                     detail=type(exc).__name__,
+                                     failure={"category": "EXCEPTION",
+                                              "failed_checks": [repr(exc)]})
+                self.state.set_run_status("failed")
+                self.log.log(stage.value, "stage_failed", severity="error",
+                             detail=repr(exc))
+                self._save()
+                self.log.flush()
+                raise
             status = "passed"
             if isinstance(result, str):
                 status = result
@@ -96,10 +119,16 @@ class Pipeline:
                                      failure=result)
                 self.log.log(stage.value, "stage_failed", severity="error",
                              detail=result.category)
+                self._save()
                 continue
             self.state.set_stage(stage.value, status)
             self.log.log(stage.value, "stage_done", duration_s=round(time.time() - t0, 3))
+            self._save()
         return self._finalize()
+
+    def _save(self) -> None:
+        """Persist the state after every stage, so a crash is never invisible (S6)."""
+        save_state(self.state, self.run_dir / "state.json")
 
     # ------------------------------------------------------------------ 1
     def stage_input_audit(self):
@@ -134,9 +163,12 @@ class Pipeline:
                        InputStatus.PREFERRED.value),
             Constraint("Xmax_mm", (p.driver.Xmax or 0) * 1e3, "mm", InputStatus.FIXED.value),
         ]
-        self.state.run = {"run_id": self.run_id, "input_path": str(Path(self.param_path).resolve()),
-                          "python": __import__("platform").python_version(),
-                          "git_commit": None}
+        self.state.run.update({
+            "run_id": self.run_id,
+            "input_path": str(Path(self.param_path).resolve()),
+            "python": __import__("platform").python_version(),
+            "git_commit": None,
+        })
         return "passed"
 
     # ------------------------------------------------------------------ 2
@@ -207,7 +239,7 @@ class Pipeline:
             return StageFailure(
                 stage=Stage.FOLD_GEOMETRY_VALIDATION.value, category="GEOMETRY",
                 failed_checks=["no valid fold preserves area law and clearances"],
-                recoverability=False,
+                recoverable=False,
                 recommended_upstream_revision="relax min_bend_radius or fold count",
                 evidence={"n_candidates": len(self.fold_candidates)})
         # choose the most compact valid fold (highest eta_pack, then fewest bends)
@@ -366,6 +398,9 @@ class Pipeline:
 
     # ------------------------------------------------------------------
     def _finalize(self) -> dict:
+        # The pipeline ran to its end; a stage may still have failed (a typed
+        # StageFailure is data) or been blocked, and the stage record says which.
+        self.state.set_run_status("completed")
         save_state(self.state, self.run_dir / "state.json")
         self.log.flush()
         # Now that state.json and logs.jsonl are on disk, emit the read-only view
