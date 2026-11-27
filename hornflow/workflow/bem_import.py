@@ -251,8 +251,13 @@ def import_into_run(run_dir, folder, *, tolerance_db: float | None = None,
         st.validation["bem_manual"] = rec
         st.validation["bem_status"] = _bem_status(held)
         # The pin goes to this run's manifest, only on an acceptance, and here.
+        # Only this attempt's verdict may pin (review of #12, item 4).  ``held``
+        # is the last accepted state, so passing it would let a failed re-import
+        # pin a run that had no pin yet; ``accepted`` only says the export
+        # passed the structural checks, not that the comparison accepted.
+        pin_state = target if target in bem_manual.PINNING_STATES else None
         bem_manual.pin_graph_group(manifest, bem_dir / manual_mod.MANIFEST_NAME,
-                                   validation, held)
+                                   validation, pin_state)
         st.log("THREE_DIMENSIONAL_VERIFICATION", "bem_import", state=held,
                attempt_state=outcome, passed=accepted,
                source=validation["source"], metrics=result.get("metrics"))

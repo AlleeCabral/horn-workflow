@@ -660,6 +660,34 @@ def test_a_copy_import_pins_only_the_copy(run_copy, pipeline_run):
     assert copy_man.expected_graph_group == "AKABAK-Rad1_23Sept26 $$$ID9075238390$$$"
 
 
+def test_a_failed_attempt_does_not_pin_an_unpinned_decided_run(run_copy):
+    """Review of #12, item 4: only an acceptance may pin the run's group."""
+    from conftest import BEM_FIXTURES
+
+    manifest = run_copy / "deliverables" / "bem" / manual.MANIFEST_NAME
+    bem_import.import_into_run(run_copy, copy_exports(run_copy), tolerance_db=12.0)
+    man = manual.read_manifest(manifest, base=run_copy)
+    assert man.expected_graph_group is not None
+    # a decided run whose pin is missing (or was cleared)
+    man.expected_graph_group = None
+    manual.write_manifest(man, manifest)
+
+    # a failed attempt whose files still share a Graph_Group: one LE curve only,
+    # so the required on-axis pressure curve is missing (a hard check), while
+    # provenance can read a group, which is what used to get pinned
+    bad = run_copy / "deliverables" / "bem" / "export_bad"
+    bad.mkdir(parents=True)
+    for src in sorted(BEM_FIXTURES.glob("Akabak-Rad1_23Sept26-LE1.vips")):
+        shutil.copy2(src, bad / src.name)
+    res = bem_import.import_into_run(run_copy, bad, tolerance_db=12.0)
+    assert res["validation"]["passed"] is False
+    assert res["validation"]["graph_group"]
+    assert res["attempt_passed"] is False
+    assert res["stored_state"] == "BEM_ACCEPTED_WITH_TOLERANCE"
+    again = manual.read_manifest(manifest, base=run_copy)
+    assert again.expected_graph_group is None
+
+
 def test_cli_bad_tolerance_is_one_error_line(run_copy, capsys):
     """Review of #12: an out-of-range tolerance is a CLI error, not a traceback."""
     from hornflow.cli import main
