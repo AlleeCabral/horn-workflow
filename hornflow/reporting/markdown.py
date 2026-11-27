@@ -297,8 +297,11 @@ def _render_tail(ctx: dict) -> str:
     return "\n".join(L)
 
 
+_CASE_META = ("metrics", "factor", "geometry_changed", "no_effect")
+
+
 def _case(d: dict) -> str:
-    vals = {k: v for k, v in d.items() if k != "metrics"}
+    vals = {k: v for k, v in d.items() if k not in _CASE_META}
     return ", ".join(f"{k.split('.')[-1]}={v}" for k, v in vals.items())
 
 

@@ -9,6 +9,8 @@ from __future__ import annotations
 
 import numpy as np
 
+from ..metrics import minus3db_cutoff
+
 P_REF = 20.0e-6
 _SPL_1W = 112.1
 
@@ -47,9 +49,7 @@ def band_metrics(f, spl, f_lo: float, f_hi: float) -> dict:
     m = (f >= f_lo) & (f <= f_hi)
     mean = float(np.mean(spl[m])) if np.any(m) else float("nan")
     var = float(np.max(spl[m]) - np.min(spl[m])) if np.any(m) else float("nan")
-    # -3 dB point relative to the band mean, scanning downward
-    below = np.where(spl <= mean - 3.0)[0]
-    cutoff = float(f[below[0]]) if len(below) else float(f[0])
+    cutoff = minus3db_cutoff(f, spl, f_lo, f_hi)
     return {"spl_mean_db": mean, "spl_variation_db": var,
             "cutoff_minus3db_hz": cutoff,
             "f_min_hz": float(f[0]), "f_max_hz": float(f[-1])}

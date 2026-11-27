@@ -259,6 +259,29 @@ def test_stage_one_loads_the_snapshot_it_wrote(tmp_path, monkeypatch):
     assert seen[0] == Path(s["run_dir"]) / "inputs" / "definition.yaml"
 
 
+# --------------------------------------------------------------- sensitivity
+def test_the_sensitivity_levers_are_relative_and_really_move_the_run(pipeline_run):
+    """Every lever must run, and each must change the thing it names (P3, P11)."""
+    from hornflow.io.state_store import load_state_file
+
+    st = load_state_file(pipeline_run / "state.json")
+    runs = {r["limit"]: r for r in st.sensitivity_runs}
+    # the driver lever used to error out because the driver lives in its own file
+    rc = runs["rear_chamber"]
+    assert "error" not in rc["stricter"]["metrics"]
+    assert "error" not in rc["relaxed"]["metrics"]
+    # the overrides are relative to this project, not fixed numbers
+    assert rc["stricter"]["driver.rear_volume"] == pytest.approx(14000.0)
+    assert rc["relaxed"]["driver.rear_volume"] == pytest.approx(56000.0)
+    assert runs["passband_bottom"]["stricter"]["target.f_low"] == pytest.approx(69.0)
+    # the -3 dB point is measured, not pinned at the lowest grid frequency
+    assert all(r["base"]["cutoff_minus3db_hz"] != 20.0 for r in st.sensitivity_runs)
+    # the mouth lever changes the geometry it claims to change
+    mouth = runs["mouth_area"]
+    assert mouth["relaxed"]["geometry_changed"]["mouth_area_cm2"] != 0.0
+    assert mouth["relaxed"]["no_effect"] is False
+
+
 # ------------------------------------------------------------------- scoring
 def test_tie_is_reported_as_no_acoustic_winner(pipeline_run):
     """Two horns with identical 1-D metrics are a tie, not a winner (P1, D4)."""
