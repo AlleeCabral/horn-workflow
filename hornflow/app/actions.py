@@ -22,7 +22,7 @@ import json
 import threading
 from pathlib import Path
 
-from ..io.state_store import load_state_file, save_state
+from ..io.state_store import load_state_file, update_state
 from . import view as _view
 from .brief import BriefStore
 
@@ -64,6 +64,14 @@ def safe_under(root: Path, *parts) -> Path:
 
 def _now() -> str:
     return _dt.datetime.now(_dt.timezone.utc).isoformat(timespec="seconds")
+
+
+class _StateUnreadable(Exception):
+    """``state.json`` exists but cannot be loaded.
+
+    Absent means a first run; unreadable means a broken run.  Treating the two
+    the same is how a corrupted run silently looked brand new (audit S2).
+    """
 
 
 class AppActions:
@@ -109,15 +117,43 @@ class AppActions:
     def _state(self):
         if self.run_dir is None:
             return None
-        try:
-            return load_state_file(self.run_dir / "state.json")
-        except Exception:                          # noqa: BLE001 - an old/broken run
+        path = self.run_dir / "state.json"
+        if not path.is_file():
             return None
+        try:
+            return load_state_file(path)
+        except Exception as exc:              # noqa: BLE001 - it must be visible
+            raise _StateUnreadable(
+                f"{path.name} in run {self.run_dir.name!r} cannot be read: "
+                f"{exc}") from exc
+
+    def _require_run(self, run_id) -> Path:
+        """The run this mutating call is for, or a structured refusal.
+
+        A tab can be showing run X while the server has moved to Y.  Every
+        mutating call names its run so that write can never land in Y (audit S1).
+        """
+        if run_id in (None, ""):
+            raise ApiError("run_id_required",
+                           "name the run this call is for; the host may have "
+                           "switched to another one", status=400)
+        if self.run_dir is None:
+            raise ApiError("no_run", "there is no run to act on", status=409)
+        got = str(run_id)
+        if got != self.run_dir.name:
+            raise ApiError("run_mismatch",
+                           f"this call names run {got!r} but the host is on "
+                           f"{self.run_dir.name!r}; reload the page",
+                           status=409, expected=self.run_dir.name, got=got)
+        return self.run_dir
 
     # ------------------------------------------------------------------ view
     def view(self) -> dict:
         draft = self.brief.draft()
-        state = self._state()
+        try:
+            state = self._state()
+        except _StateUnreadable as exc:
+            return self._state_error_view(draft, str(exc))
         logs = self._logs()
         v = _view.build_view(state if state is not None else {},
                              run_dir=self.run_dir, brief=draft["values"],
@@ -139,6 +175,27 @@ class AppActions:
             v["project"]["name"] = ((state.project or {}).get("name")
                                     or v["project"]["name"])
         return v
+
+    def _state_error_view(self, draft: dict, message: str) -> dict:
+        """The page the host serves for a run whose state cannot be read.
+
+        It keeps the shell (tabs, definitions, run list) and says what is wrong.
+        It never falls back to the first-run view, and it never offers to act on
+        the run.
+        """
+        return {
+            "mode": "state_error",
+            "error": {"code": "state_unreadable", "message": message},
+            "host": "local",
+            "run": {"run_id": (self.run_dir.name if self.run_dir else None)},
+            "current_state": {}, "completion": {}, "gates": [], "questions": [],
+            "outcome": {}, "import_panel": {}, "next_action": None,
+            "unvalidated_accepted": False,
+            "definitions": self.brief.definitions(),
+            "runs": self.runs(),
+            "brief_draft": draft,
+            "live": self.progress(),
+        }
 
     def _frozen_matches(self, draft: dict) -> bool:
         frozen = self.brief._read_yaml(self.brief.dir / "brief.yaml")  # noqa: SLF001
@@ -269,7 +326,10 @@ class AppActions:
         stages = []
         total = passed = 0
         if self.run_dir is not None:
-            st = self._state()
+            try:
+                st = self._state()
+            except _StateUnreadable:
+                st = None
             if st is not None:
                 for name, rec in (st.stages or {}).items():
                     status = str((rec or {}).get("status", "pending"))
@@ -296,13 +356,12 @@ class AppActions:
         }
 
     # --------------------------------------------------------------- import
-    def import_vips(self, *, subdir=None, tolerance_db=6.0) -> dict:
+    def import_vips(self, *, run_id, subdir=None, tolerance_db=6.0) -> dict:
         """Validate + compare a ``.vips`` export.  The folder is never a path."""
-        if self.run_dir is None:
-            raise ApiError("no_run", "there is no run to import into", status=409)
+        run_dir = self._require_run(run_id)
         from ..workflow import bem_import
 
-        bem_dir = self.run_dir / "deliverables" / "bem"
+        bem_dir = run_dir / "deliverables" / "bem"
         folder = safe_under(bem_dir, subdir or "export")
         if not folder.is_dir():
             raise ApiError(
@@ -310,7 +369,7 @@ class AppActions:
                 "the export folder does not exist yet - do the GUI solve, export "
                 "the .vips spectra into deliverables/bem/export, then import",
                 status=409)
-        result = bem_import.import_into_run(self.run_dir, folder,
+        result = bem_import.import_into_run(run_dir, folder,
                                            tolerance_db=float(tolerance_db))
         return {"ok": bool((result.get("validation") or {}).get("passed")),
                 "state": result.get("state"),
@@ -320,8 +379,10 @@ class AppActions:
                 "view": self.view()}
 
     # ------------------------------------------------------------- decision
-    def decision(self, *, kind, reason=None, note="", actor=None, now=None) -> dict:
+    def decision(self, *, run_id, kind, reason=None, note="", actor=None,
+                 now=None) -> dict:
         """Record a structured decision.  Never changes a measured BEM result."""
+        run_dir = self._require_run(run_id)
         if kind != "accept_unvalidated":
             raise ApiError("unknown_decision", f"unknown decision {kind!r}")
         if reason not in ACCEPT_REASONS:
@@ -329,30 +390,30 @@ class AppActions:
                            allowed=list(ACCEPT_REASONS))
         if reason == "Other" and not str(note or "").strip():
             raise ApiError("note_required", "'Other' needs a note")
-        if self.run_dir is None:
-            raise ApiError("no_run", "there is no run to record a decision for",
-                           status=409)
-        st = load_state_file(self.run_dir / "state.json")
-        bem = (st.validation or {}).get("bem_manual") or {}
-        if bem.get("state") == "BEM_VALIDATED":
-            raise ApiError("already_validated",
-                           "this candidate is BEM_VALIDATED; acceptance is not needed",
-                           status=409)
-        entry = {
-            "utc": now or _now(), "stage": "FINAL_DECISION",
-            "event": "accept_unvalidated", "kind": kind, "reason": reason,
-            "note": str(note or "").strip(), "actor": actor or self.author or "",
-            "bem_state": bem.get("state"),
-            "bem_status": (st.validation or {}).get("bem_status"),
-            "tolerance_db": bem.get("tolerance_db"),
-            "result_hash": _hash_json({"checks": bem.get("checks"),
-                                       "metrics": bem.get("metrics")}),
-            "effect": "the acoustic result stays unvalidated",
-        }
-        st.decision_log.append(entry)
-        st.validation.setdefault("decisions", []).append(entry)
-        st.validation["accepted_unvalidated"] = True
-        save_state(st, self.run_dir / "state.json")
+
+        def apply(st):
+            bem = (st.validation or {}).get("bem_manual") or {}
+            if bem.get("state") == "BEM_VALIDATED":
+                raise ApiError("already_validated",
+                               "this candidate is BEM_VALIDATED; acceptance is "
+                               "not needed", status=409)
+            entry = {
+                "utc": now or _now(), "stage": "FINAL_DECISION",
+                "event": "accept_unvalidated", "kind": kind, "reason": reason,
+                "note": str(note or "").strip(), "actor": actor or self.author or "",
+                "bem_state": bem.get("state"),
+                "bem_status": (st.validation or {}).get("bem_status"),
+                "tolerance_db": bem.get("tolerance_db"),
+                "result_hash": _hash_json({"checks": bem.get("checks"),
+                                           "metrics": bem.get("metrics")}),
+                "effect": "the acoustic result stays unvalidated",
+            }
+            st.decision_log.append(entry)
+            st.validation.setdefault("decisions", []).append(entry)
+            st.validation["accepted_unvalidated"] = True
+            return entry
+
+        entry = update_state(run_dir / "state.json", apply)
         return {"ok": True, "decision": entry, "view": self.view()}
 
 

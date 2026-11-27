@@ -328,14 +328,14 @@ def _stage_names(a):
 def test_decision_requires_a_fixed_reason_and_a_note_for_other(project):
     a = _actions(project)
     with pytest.raises(ApiError) as exc:
-        a.decision(kind="accept_unvalidated", reason="invented reason")
+        a.decision(run_id=project[1], kind="accept_unvalidated", reason="invented reason")
     assert exc.value.code == "reason_required"
     assert exc.value.extra["allowed"] == list(ACCEPT_REASONS)
     with pytest.raises(ApiError) as exc:
-        a.decision(kind="accept_unvalidated", reason="Other", note="  ")
+        a.decision(run_id=project[1], kind="accept_unvalidated", reason="Other", note="  ")
     assert exc.value.code == "note_required"
     with pytest.raises(ApiError) as exc:
-        a.decision(kind="delete_everything")
+        a.decision(run_id=project[1], kind="delete_everything")
     assert exc.value.code == "unknown_decision"
 
 
@@ -344,7 +344,7 @@ def test_accepting_unvalidated_records_an_audit_entry_and_leaves_the_result_alon
     a = _actions(project)
     before = a._state()                               # noqa: SLF001
     bem_before = dict(before.validation.get("bem_manual") or {})
-    out = a.decision(kind="accept_unvalidated",
+    out = a.decision(run_id=project[1], kind="accept_unvalidated",
                      reason="AKABAK Free/export limitation",
                      note="prototype only", actor="alex",
                      now="2026-10-04T12:00:00+00:00")
@@ -381,7 +381,7 @@ def test_a_validated_candidate_cannot_be_accepted_as_unvalidated(project):
     raw["validation"]["bem_status"] = "validated"
     path.write_text(_json.dumps(raw), encoding="utf-8")
     with pytest.raises(ApiError) as exc:
-        a.decision(kind="accept_unvalidated", reason=ACCEPT_REASONS[0])
+        a.decision(run_id=run_id, kind="accept_unvalidated", reason=ACCEPT_REASONS[0])
     assert exc.value.code == "already_validated"
     assert exc.value.status == 409
     # and nothing was recorded
@@ -396,7 +396,7 @@ def test_import_without_an_export_folder_fails_with_an_actionable_message(projec
     shutil.rmtree(_project_root(project) / "runs" / project[1] / "deliverables"
                   / "bem" / "export", ignore_errors=True)
     with pytest.raises(ApiError) as exc:
-        a.import_vips()
+        a.import_vips(run_id=project[1])
     assert exc.value.code == "no_export_folder"
     assert "export the .vips" in exc.value.message
 
@@ -404,8 +404,90 @@ def test_import_without_an_export_folder_fails_with_an_actionable_message(projec
 def test_import_folder_cannot_be_traversed(project):
     a = _actions(project)
     with pytest.raises(ApiError) as exc:
-        a.import_vips(subdir="../../../../etc")
+        a.import_vips(run_id=a.run_dir.name, subdir="../../../../etc")
     assert exc.value.code == "path_rejected"
+
+
+# --------------------------------------------------------------------------- #
+#  4b. every mutating call names its run; an unreadable state is visible
+#      (audit S1, S2)
+# --------------------------------------------------------------------------- #
+def test_decision_for_other_run_is_refused(project):
+    """Two tabs, one project: the tab showing run X cannot decide for run Y."""
+    a = _actions(project)
+    other = "run_not_this_one"
+    with pytest.raises(ApiError) as exc:
+        a.decision(run_id=other, kind="accept_unvalidated", reason=ACCEPT_REASONS[0])
+    assert exc.value.code == "run_mismatch" and exc.value.status == 409
+    assert exc.value.extra == {"expected": a.run_dir.name, "got": other}
+    assert not load_state_file(a.run_dir / "state.json").validation.get(
+        "accepted_unvalidated")
+
+
+def test_import_for_other_run_is_refused_before_reading_its_exports(project):
+    a = _actions(project)
+    before = (a.run_dir / "state.json").read_bytes()
+    with pytest.raises(ApiError) as exc:
+        a.import_vips(run_id="run_not_this_one")
+    assert exc.value.code == "run_mismatch" and exc.value.status == 409
+    assert (a.run_dir / "state.json").read_bytes() == before
+
+
+@pytest.mark.parametrize("call", [
+    lambda a: a.decision(run_id=None, kind="accept_unvalidated",
+                         reason=ACCEPT_REASONS[0]),
+    lambda a: a.import_vips(run_id=None),
+])
+def test_a_mutating_call_with_a_missing_run_id_is_refused(project, call):
+    """None is not "the current run": an unnamed run is refused, never guessed."""
+    a = _actions(project)
+    with pytest.raises(ApiError) as exc:
+        call(a)
+    assert exc.value.code == "run_id_required" and exc.value.status == 400
+    assert not load_state_file(a.run_dir / "state.json").validation.get(
+        "accepted_unvalidated")
+
+
+def test_corrupt_state_is_reported_not_treated_as_a_first_run(project):
+    a = _actions(project)
+    (a.run_dir / "state.json").write_text("{ broken", encoding="utf-8")
+    v = a.view()
+    assert v["mode"] == "state_error"
+    assert v["error"]["code"] == "state_unreadable"
+    assert "state.json" in v["error"]["message"]
+
+
+def test_a_missing_state_file_is_still_a_first_run(project):
+    """The distinction that matters: absent means new, unreadable means broken."""
+    proj, _ = project
+    empty = proj / "runs" / "run_empty"
+    empty.mkdir()
+    a = _actions(project, run_dir=empty)
+    assert a.view()["mode"] != "state_error"
+
+
+def test_progress_survives_an_unreadable_state(project):
+    a = _actions(project)
+    (a.run_dir / "state.json").write_text("{ broken", encoding="utf-8")
+    prog = a.progress()
+    assert prog["stages"] == [] and prog["percent"] == 0
+
+
+def test_the_decision_is_written_through_the_locked_writer(project, monkeypatch):
+    from hornflow.app import actions as actions_mod
+
+    calls = []
+    real = actions_mod.update_state
+
+    def spy(path, fn):
+        calls.append(Path(path).name)
+        return real(path, fn)
+
+    monkeypatch.setattr(actions_mod, "update_state", spy)
+    a = _actions(project)
+    a.decision(run_id=a.run_dir.name, kind="accept_unvalidated",
+               reason=ACCEPT_REASONS[0])
+    assert calls == ["state.json"]
 
 
 # --------------------------------------------------------------------------- #
@@ -491,17 +573,33 @@ def test_static_traversal_is_refused(server, path):
 
 
 def test_traversal_through_the_api_is_refused(server):
-    base, _ = server
+    base, a = server
     code, body = _post(base, "/api/select", {"run_id": "../../../etc"})
     assert code == 400 and body["error"]["code"] == "path_rejected"
     code, body = _post(base, "/api/run", {"definition": "../../etc/passwd"})
     assert code == 400 and body["error"]["code"] == "unknown_definition"
-    code, body = _post(base, "/api/import", {"subdir": "../../../../etc"})
+    code, body = _post(base, "/api/import", {"run_id": a.run_dir.name,
+                                            "subdir": "../../../../etc"})
     assert code == 400 and body["error"]["code"] == "path_rejected"
 
 
+def test_a_mutating_post_names_its_run(server):
+    """The HTTP contract behind audit S1: a stale tab cannot write to this run."""
+    base, a = server
+    payload = {"kind": "accept_unvalidated", "reason": ACCEPT_REASONS[0]}
+    code, body = _post(base, "/api/decision", payload)
+    assert code == 400 and body["error"]["code"] == "run_id_required"
+    code, body = _post(base, "/api/decision", dict(payload, run_id="run_not_this_one"))
+    assert code == 409 and body["error"]["code"] == "run_mismatch"
+    assert body["error"]["expected"] == a.run_dir.name
+    code, body = _post(base, "/api/decision", dict(payload, run_id=a.run_dir.name))
+    assert code == 200 and body["ok"] is True
+    code, body = _post(base, "/api/import", {"run_id": "run_not_this_one"})
+    assert code == 409 and body["error"]["code"] == "run_mismatch"
+
+
 def test_the_full_brief_run_decision_loop_over_http(server):
-    base, _ = server
+    base, a = server
     code, body = _post(base, "/api/brief", {"values": {"f_min_hz": 99999}})
     assert code == 200 and body["ok"] is False and "f_min_hz" in body["field_errors"]
     code, body = _post(base, "/api/brief", {"values": {"deployment": "http loop"}})
@@ -515,6 +613,7 @@ def test_the_full_brief_run_decision_loop_over_http(server):
     assert code == 200 and prog["state"] == "done"
     assert prog["run_id"] == "run_http_1"
     code, body = _post(base, "/api/decision", {
+        "run_id": a.run_dir.name,
         "kind": "accept_unvalidated",
         "reason": "Partial evidence accepted for prototype only", "actor": "http"})
     assert code == 200 and body["ok"] is True

@@ -116,11 +116,13 @@ class _Handler(BaseHTTPRequestHandler):
         elif path == "/api/run":
             out = self.actions.start_run(body.get("definition"))
         elif path == "/api/import":
-            out = self.actions.import_vips(subdir=body.get("subdir"),
+            out = self.actions.import_vips(run_id=body.get("run_id"),
+                                           subdir=body.get("subdir"),
                                            tolerance_db=body.get("tolerance_db")
                                            or 6.0)
         elif path == "/api/decision":
-            out = self.actions.decision(kind=body.get("kind"),
+            out = self.actions.decision(run_id=body.get("run_id"),
+                                        kind=body.get("kind"),
                                         reason=body.get("reason"),
                                         note=body.get("note", ""),
                                         actor=body.get("actor"))
