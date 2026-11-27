@@ -10,11 +10,13 @@ Under pytest:    python3 -m pytest tests/test_app_api.py -q
 
 from __future__ import annotations
 
+import http.client
 import json
 import shutil
 import sys
 import threading
 import urllib.error
+import urllib.parse
 import urllib.request
 from pathlib import Path
 
@@ -627,7 +629,8 @@ def test_a_bad_body_is_rejected_without_a_traceback(server):
     base, _ = server
     for payload, needle in ((b"{not json", "bad_json"), (b"[1,2,3]", "JSON object")):
         req = urllib.request.Request(base + "/api/brief", method="POST",
-                                     data=payload, headers={})
+                                     data=payload,
+                                     headers={"Content-Type": "application/json"})
         try:
             urllib.request.urlopen(req, timeout=30)
             raise AssertionError("expected an error")
@@ -670,6 +673,168 @@ def test_an_internal_error_never_leaks_a_traceback(server, monkeypatch):
     text = json.dumps(body)
     assert "secret internal detail" not in text
     assert "Traceback" not in text
+
+
+# --------------------------------------------------------------------------- #
+#  6. the request guard: foreign host, cross-site origin, non-JSON (audit S3)
+#
+#  A page on any origin can POST to 127.0.0.1 without a preflight when the body
+#  is "simple" (text/plain), and DNS rebinding makes every GET readable.  So the
+#  guard runs before any route: a refused request writes nothing and serves
+#  nothing, and the answer is a structured error, never a 500.
+# --------------------------------------------------------------------------- #
+def _raw(base, method, path, *, body=None, headers=None):
+    """One request with full control over the headers; urllib sets Host itself."""
+    url = urllib.parse.urlparse(base)
+    conn = http.client.HTTPConnection(url.hostname, url.port, timeout=60)
+    try:
+        conn.request(method, path, body=body, headers=headers or {})
+        res = conn.getresponse()
+        data = res.read()
+        try:
+            return res.status, json.loads(data)
+        except ValueError:
+            return res.status, data
+    finally:
+        conn.close()
+
+
+def _port(base):
+    return urllib.parse.urlparse(base).port
+
+
+def test_a_foreign_host_header_is_refused_on_every_route(server):
+    """The Host header is what DNS rebinding cannot forge; GET included."""
+    base, actions = server
+    before = actions.brief.draft()
+    attempts = (
+        ("GET", "/api/health", None),
+        ("GET", "/api/view", None),
+        ("GET", "/viewer/ui/app.js", None),
+        ("POST", "/api/brief", b'{"values": {"deployment": "evil.example"}}'),
+        ("POST", "/api/select", b'{"run_id": "whatever"}'),
+    )
+    for method, path, body in attempts:
+        status, payload = _raw(base, method, path, body=body,
+                               headers={"Host": "evil.example",
+                                        "Content-Type": "application/json"})
+        assert status == 403, (method, path, status)
+        assert payload["error"]["code"] == "bad_host"
+    assert actions.brief.draft() == before
+
+
+def test_a_cross_origin_post_is_refused_and_writes_nothing(server):
+    base, actions = server
+    before = actions.brief.draft()
+    status, payload = _raw(base, "POST", "/api/brief",
+                           body=b'{"values": {"deployment": "evil.example"}}',
+                           headers={"Origin": "http://evil.example",
+                                    "Content-Type": "application/json"})
+    assert status == 403 and payload["error"]["code"] == "bad_origin"
+    assert actions.brief.draft() == before
+
+
+@pytest.mark.parametrize("origin", ["http://evil.example",
+                                    "http://127.0.0.1:1",
+                                    "https://127.0.0.1",
+                                    "http://127.0.0.1:not-a-port",
+                                    "null"])
+def test_a_malformed_or_foreign_origin_is_a_clean_refusal(server, origin):
+    """A garbage Origin is a refusal, never a 500 and never a write."""
+    base, actions = server
+    if origin == "https://127.0.0.1":
+        origin = "https://127.0.0.1:%d" % _port(base)
+    before = actions.brief.draft()
+    status, payload = _raw(base, "POST", "/api/brief",
+                           body=b'{"values": {"deployment": "evil.example"}}',
+                           headers={"Origin": origin,
+                                    "Content-Type": "application/json"})
+    assert status == 403 and payload["error"]["code"] == "bad_origin"
+    assert actions.brief.draft() == before
+
+
+@pytest.mark.parametrize("name", ["127.0.0.1", "localhost"])
+def test_a_same_origin_post_is_allowed(server, name):
+    """The viewer's own posts carry an Origin; both loopback spellings pass."""
+    base, actions = server
+    origin = "http://%s:%d" % (name, _port(base))
+    status, payload = _raw(base, "POST", "/api/brief",
+                           body=b'{"values": {"deployment": "corner"}}',
+                           headers={"Origin": origin,
+                                    "Content-Type": "application/json"})
+    assert status == 200 and payload["ok"] is True
+    assert actions.brief.draft()["values"]["deployment"] == "corner"
+
+
+@pytest.mark.parametrize("ctype", ["text/plain",
+                                   "application/x-www-form-urlencoded",
+                                   "application/jsonp", None])
+def test_a_non_json_content_type_is_refused(server, ctype):
+    base, actions = server
+    before = actions.brief.draft()
+    headers = {} if ctype is None else {"Content-Type": ctype}
+    status, payload = _raw(base, "POST", "/api/brief",
+                           body=b'{"values": {"deployment": "evil.example"}}',
+                           headers=headers)
+    assert status == 415, (ctype, status)
+    assert payload["error"]["code"] == "bad_content_type"
+    assert actions.brief.draft() == before
+
+
+@pytest.mark.parametrize("ctype", ["application/json",
+                                   "application/json; charset=utf-8",
+                                   "APPLICATION/JSON"])
+def test_a_json_media_type_is_accepted_whatever_the_parameters(server, ctype):
+    base, _ = server
+    status, payload = _raw(base, "POST", "/api/brief",
+                           body=b'{"values": {"deployment": "corner"}}',
+                           headers={"Content-Type": ctype})
+    assert status == 200 and payload["ok"] is True
+
+
+def test_a_non_integer_content_length_is_refused(server):
+    base, actions = server
+    before = actions.brief.draft()
+    status, payload = _raw(base, "POST", "/api/brief", body=b"{}",
+                           headers={"Content-Type": "application/json",
+                                    "Content-Length": "abc"})
+    assert status == 400 and payload["error"]["code"] == "bad_length"
+    assert actions.brief.draft() == before
+
+
+def test_health_does_not_leak_paths(server):
+    base, actions = server
+    status, payload = _get(base, "/api/health")
+    assert status == 200 and payload == {"ok": True}
+    assert actions.root.name not in json.dumps(payload)
+    assert str(actions.root) not in json.dumps(payload)
+
+
+def test_a_non_loopback_bind_says_so_at_startup(project, monkeypatch, capsys):
+    import hornflow.app.__main__ as app_main
+
+    proj, _ = project
+    seen = {}
+    monkeypatch.setattr(app_main, "serve",
+                        lambda actions, **kw: seen.update(kw) or 0)
+    argv = ["--project", str(proj),
+            "--base", str(proj / "params" / "horn_jbl_1200b.yaml"),
+            "--host", "0.0.0.0"]
+    assert app_main.main(argv) == 0
+    assert seen["host"] == "0.0.0.0"
+    assert "loopback" in capsys.readouterr().err
+
+
+def test_a_loopback_bind_is_quiet(project, monkeypatch, capsys):
+    import hornflow.app.__main__ as app_main
+
+    proj, _ = project
+    monkeypatch.setattr(app_main, "serve", lambda actions, **kw: 0)
+    argv = ["--project", str(proj),
+            "--base", str(proj / "params" / "horn_jbl_1200b.yaml")]
+    assert app_main.main(argv) == 0
+    assert capsys.readouterr().err == ""
+
 
 
 

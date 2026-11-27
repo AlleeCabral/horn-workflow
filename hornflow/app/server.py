@@ -29,10 +29,90 @@ from .actions import ApiError, AppActions, safe_under
 
 MAX_BODY = 256 * 1024
 
+# The API exists for the page it serves, on this machine.  Anything else is
+# either a mistake or an attack: a foreign Host header is what a DNS-rebinding
+# page cannot forge, and a foreign Origin is what a cross-site POST carries.
+LOOPBACK_HOSTS = frozenset({"127.0.0.1", "localhost", "::1"})
+WILDCARD_HOSTS = frozenset({"", "0.0.0.0", "::", "[::]"})
+
+
+def _split_host(value: str) -> tuple[str, str]:
+    """Split a ``Host`` header into ``(name, port)``, IPv6 literals included.
+
+    ``"127.0.0.1:8765"`` -> ``("127.0.0.1", "8765")``; ``"[::1]:8765"`` ->
+    ``("::1", "8765")``; a header with no port comes back with ``""``.
+    """
+    value = (value or "").strip().lower()
+    if value.startswith("["):
+        name, _, rest = value[1:].partition("]")
+        return name, (rest[1:] if rest.startswith(":") else "")
+    name, sep, port = value.partition(":")
+    return name, (port if sep else "")
+
 
 class _Handler(BaseHTTPRequestHandler):
     server_version = "HornFlow/1.0"
     actions: AppActions = None          # set on the subclass by create_server
+
+    # ------------------------------------------------------------- the guard
+    def _bound_port(self) -> str:
+        return str(self.server.server_address[1])
+
+    def _host_names(self) -> set:
+        """Every host name this server answers to: loopback plus what was bound."""
+        names = set(LOOPBACK_HOSTS)
+        for name in (getattr(self.server, "bind_host", None),
+                     self.server.server_address[0]):
+            name = (name or "").lower()
+            if name not in WILDCARD_HOSTS:
+                names.add(name)
+        return names
+
+    def _origin_is_local(self, origin: str) -> bool:
+        parsed = urlparse(origin)
+        if parsed.scheme != "http":
+            return False
+        try:
+            port = parsed.port
+        except ValueError:                  # "http://127.0.0.1:not-a-port"
+            return False
+        if port not in (None, int(self._bound_port())):
+            return False
+        return (parsed.hostname or "").lower() in self._host_names()
+
+    def _guard(self, *, json_body: bool) -> None:
+        """Refuse foreign hosts, cross-site origins and non-JSON bodies (S3).
+
+        Runs before any route, static files included, so a refused request reads
+        no folder, writes no state and reveals no path.
+        """
+        name, port = _split_host(self.headers.get("Host"))
+        port = port or "80"                    # a browser omits :80
+        if name not in self._host_names() or port != self._bound_port():
+            raise ApiError("bad_host",
+                           "this API answers its own host only; got Host "
+                           f"{self.headers.get('Host')!r}, expected one of "
+                           f"{sorted(self._host_names())} on port {self._bound_port()}",
+                           status=403)
+        origin = self.headers.get("Origin")
+        if origin is not None and not self._origin_is_local(origin):
+            raise ApiError("bad_origin",
+                           f"cross-origin request refused: Origin {origin!r} is not "
+                           "this application", status=403)
+        length = self.headers.get("Content-Length")
+        if length not in (None, ""):
+            try:
+                int(length)
+            except ValueError:
+                raise ApiError("bad_length",
+                               f"Content-Length must be an integer, got {length!r}") from None
+        if json_body:
+            ctype = self.headers.get("Content-Type") or ""
+            media = ctype.split(";")[0].strip().lower()
+            if media != "application/json":
+                raise ApiError("bad_content_type",
+                               "the request body must be application/json, got "
+                               f"{ctype or 'no Content-Type'}", status=415)
 
     # ------------------------------------------------------------- plumbing
     def log_message(self, fmt, *args):                 # quieter, still useful
@@ -69,6 +149,7 @@ class _Handler(BaseHTTPRequestHandler):
     def do_GET(self):                                  # noqa: N802 - stdlib name
         path = urlparse(self.path).path
         try:
+            self._guard(json_body=False)
             return self._handle_get(path)
         except ApiError as exc:
             return self._json(exc.to_dict(), exc.status)
@@ -79,6 +160,7 @@ class _Handler(BaseHTTPRequestHandler):
     def do_POST(self):                                 # noqa: N802 - stdlib name
         path = urlparse(self.path).path
         try:
+            self._guard(json_body=True)
             return self._handle_post(path)
         except ApiError as exc:
             return self._json(exc.to_dict(), exc.status)
@@ -94,7 +176,7 @@ class _Handler(BaseHTTPRequestHandler):
 
     def _handle_get(self, path: str):
         if path == "/api/health":
-            return self._json({"ok": True, "root": str(self.actions.root)})
+            return self._json({"ok": True})
         if path == "/api/view":
             return self._json(self.actions.view())
         if path == "/api/progress":
@@ -182,6 +264,7 @@ def create_server(actions: AppActions, *, host: str = "127.0.0.1", port: int = 0
     handler = type("HornFlowHandler", (_Handler,), {"actions": actions})
     httpd = ThreadingHTTPServer((host, int(port)), handler)
     httpd.daemon_threads = True
+    httpd.bind_host = host          # the guard trusts loopback plus this name
     return httpd
 
 
