@@ -120,13 +120,13 @@ def _graph_group(parsed: dict) -> str:
     return str((parsed.get("meta") or {}).get("Graph_Group", "")).strip()
 
 
-def _file_time(path: Path, parsed: dict) -> datetime:
+def _file_time(key: str, path: Path, parsed: dict) -> datetime:
     """The ``.vips`` header timestamp when the file carries one, else its mtime.
 
     The header is what AKABAK writes when it exports; mtime is only what the
     copy did.  A file with no header stamp falls back to its mtime.
     """
-    stamp = (parsed.get(path.name) or {}).get("header_time")
+    stamp = (parsed.get(key) or {}).get("header_time")
     dt = _parse_utc(stamp) if stamp else None
     return dt or _mtime_utc(path)
 
@@ -194,6 +194,7 @@ def validate_exports(folder, manifest=None, *, slack_s: float = 120.0) -> Export
     """
     folder = Path(folder)
     files = _bem.candidate_files(folder)
+    rel = {p: p.relative_to(folder).as_posix() for p in files}
     parsed, errors = _bem.parse_folder(folder)
     checks: list = []
 
@@ -204,10 +205,16 @@ def validate_exports(folder, manifest=None, *, slack_s: float = 120.0) -> Export
         else f"no file matching {', '.join(_bem.IMPORT_EXTS)} under {folder}"))
 
     # 2. file is non-empty
-    empty = [p.name for p in files if p.stat().st_size == 0]
+    empty = [rel[p] for p in files if p.stat().st_size == 0]
     checks.append(Check(
         "files_non_empty", bool(files) and not empty,
         "all files non-empty" if not empty else f"empty file(s): {', '.join(empty)}"))
+
+    # 2b. every file read is parsed, so every file below is actually checked
+    checks.append(Check(
+        "every_file_parsed", bool(files) and not errors,
+        "every importable file parsed" if not errors
+        else "could not parse: " + "; ".join(errors[:5])))
 
     # only a radiated pressure capture may be compared with the 1-D model
     onaxis = {n: p for n, p in parsed.items() if _bem.is_onaxis_pressure(p)}
@@ -244,8 +251,8 @@ def validate_exports(folder, manifest=None, *, slack_s: float = 120.0) -> Export
                             severity=SOFT))
     else:
         gen = _parse_utc(manifest.generated_utc)
-        stale = [p.name for p in files
-                 if gen and _file_time(p, parsed) < gen - _secs(slack_s)]
+        stale = [rel[p] for p in files
+                 if gen and _file_time(rel[p], p, parsed) < gen - _secs(slack_s)]
         checks.append(Check(
             "export_timestamp_after_inputs", bool(files) and not stale,
             f"all exports newer than {manifest.generated_utc}" if not stale
@@ -257,8 +264,8 @@ def validate_exports(folder, manifest=None, *, slack_s: float = 120.0) -> Export
         checks.append(Check("belongs_to_run", False,
                             "no run manifest - provenance cannot be proven"))
     else:
-        groups = {n: _graph_group(p) for n, p in parsed.items()}
-        missing = sorted(n for n, g in groups.items() if not g)
+        groups = {rel[p]: _graph_group(parsed.get(rel[p]) or {}) for p in files}
+        missing = sorted(k for k, g in groups.items() if not g)
         distinct = sorted({g for g in groups.values() if g})
         expected = (manifest.expected_graph_group or "").strip()
         if not parsed:
@@ -293,7 +300,7 @@ def validate_exports(folder, manifest=None, *, slack_s: float = 120.0) -> Export
         state=(ManualSolveState.VIPS_IMPORTED.value if passed
                else ManualSolveState.MANUAL_SOLVE_PENDING.value),
         passed=passed, rejected=not passed, checks=checks, warnings=warnings,
-        errors=errors, files=[p.name for p in files],
+        errors=errors, files=[rel[p] for p in files],
         source=best_name, best=best, graph_group=graph_group)
 
 
@@ -379,19 +386,32 @@ def import_and_validate(params, reference, folder, out_dir, *, manifest=None,
         out["state"] = ManualSolveState.BEM_ACCEPTED_WITH_TOLERANCE.value
     else:
         out["state"] = ManualSolveState.BEM_VALIDATED.value
-    _record_graph_group(manifest, validation)
     return out
 
 
-def _record_graph_group(manifest, validation) -> None:
-    """Pin the run's Graph_Group the first time an import proves it (audit B4)."""
-    if manifest is None or validation.graph_group is None:
-        return
+PINNING_STATES = (ManualSolveState.BEM_VALIDATED.value,
+                  ManualSolveState.BEM_ACCEPTED_WITH_TOLERANCE.value)
+
+
+def pin_graph_group(manifest, manifest_path, validation, state: str) -> bool:
+    """Pin the run's Graph_Group once an accepted import proves it (audit B4).
+
+    Only a validated or relaxed acceptance pins; a rejected comparison proves
+    nothing about acceptance.  The caller says *where* the manifest is and calls
+    this inside its own state update, so the pin cannot land in the run the
+    export came from (review of #12).
+    """
+    if manifest is None or not manifest_path or str(state) not in PINNING_STATES:
+        return False
     if (manifest.expected_graph_group or "").strip():
-        return
-    manifest.expected_graph_group = validation.graph_group
-    if manifest.bem_dir:
-        write_manifest(manifest, Path(manifest.bem_dir) / MANIFEST_NAME)
+        return False
+    group = (validation.get("graph_group") if isinstance(validation, dict)
+             else getattr(validation, "graph_group", None))
+    if not group:
+        return False
+    manifest.expected_graph_group = group
+    write_manifest(manifest, Path(manifest_path))
+    return True
 
 
 # --------------------------------------------------------------------------- #

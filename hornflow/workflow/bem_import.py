@@ -14,7 +14,7 @@ import numpy as np
 
 from .. import config
 from ..domain.evidence import now_utc
-from ..io.state_store import load_state_file, save_state
+from ..io.state_store import load_state_file, update_state
 from ..physics.solvers import bem_manual
 from ..physics.solvers import manual as manual_mod
 
@@ -100,42 +100,52 @@ def import_into_run(run_dir, folder, *, tolerance_db: float | None = None,
     result = bem_manual.import_and_validate(params, reference, folder, bem_dir,
                                             manifest=manifest, tolerance_db=tolerance_db)
     validation = result["validation"]
+    accepted = bool(validation["passed"])
+    target = str(result["state"])
 
-    manual_rec = dict((state.validation.get("bem_manual") or {}))
-    current = manual_rec.get("state") or manual_mod.ManualSolveState.GUI_REQUIRED.value
-    if result["validation"]["passed"]:
-        steps = [manual_mod.ManualSolveState.VIPS_IMPORTED.value,
-                 manual_mod.ManualSolveState.BEM_COMPARISON_COMPLETED.value,
-                 result["state"]]
-        for t in steps:
-            current = _walk_to(current, t)
-    else:
-        # validation failed -> stay where we are; the human re-exports.
-        current = _walk_to(current, manual_mod.ManualSolveState.MANUAL_SOLVE_PENDING.value)
+    def apply(st):
+        """Record the import; the graph-group pin happens inside this update."""
+        rec = dict(st.validation.get("bem_manual") or {})
+        held = str(rec.get("state") or manual_mod.ManualSolveState.GUI_REQUIRED.value)
+        if accepted:
+            steps = [manual_mod.ManualSolveState.VIPS_IMPORTED.value,
+                     manual_mod.ManualSolveState.BEM_COMPARISON_COMPLETED.value,
+                     target]
+            for t in steps:
+                held = _walk_to(held, t)
+        else:
+            # validation failed -> stay where we are; the human re-exports.
+            held = _walk_to(held, manual_mod.ManualSolveState.MANUAL_SOLVE_PENDING.value)
+        rec.update({
+            "state": held,
+            "validation_passed": accepted,
+            "validation": validation,
+            "checks": validation["checks"],
+            "warnings": validation["warnings"],
+            "source": validation["source"],
+            "tolerance_db": float(tolerance_db),
+            "imported_utc": now_utc(),
+            "metrics": result.get("metrics"),
+        })
+        st.validation["bem_manual"] = rec
+        st.validation["bem_status"] = (
+            "validated" if held == manual_mod.ManualSolveState.BEM_VALIDATED.value else
+            "accepted_with_tolerance"
+            if held == manual_mod.ManualSolveState.BEM_ACCEPTED_WITH_TOLERANCE.value else
+            "rejected" if held == manual_mod.ManualSolveState.BEM_REJECTED.value else
+            "pending_external")
+        # The pin goes to the manifest of THIS run, and only on an acceptance.
+        bem_manual.pin_graph_group(manifest, bem_dir / manual_mod.MANIFEST_NAME,
+                                   validation, held)
+        st.log("THREE_DIMENSIONAL_VERIFICATION", "bem_import",
+               state=held, source=validation["source"],
+               metrics=result.get("metrics"))
+        return held
 
-    manual_rec.update({
-        "state": current,
-        "validation_passed": validation["passed"],
-        "validation": validation,
-        "checks": validation["checks"],
-        "warnings": validation["warnings"],
-        "source": validation["source"],
-        "tolerance_db": float(tolerance_db),
-        "imported_utc": now_utc(),
-        "metrics": result.get("metrics"),
-    })
-    state.validation["bem_manual"] = manual_rec
-    state.validation["bem_status"] = (
-        "validated" if current == manual_mod.ManualSolveState.BEM_VALIDATED.value else
-        "rejected" if current == manual_mod.ManualSolveState.BEM_REJECTED.value else
-        "pending_external")
+    current = update_state(run_dir / "state.json", apply)
     report = bem_manual.validation_md(result, project=params.project,
                                       run_id=state.run.get("run_id", ""))
     (bem_dir / "bem_manual_report.md").write_text(report, encoding="utf-8")
-    state.log("THREE_DIMENSIONAL_VERIFICATION", "bem_import",
-              state=current, source=validation["source"],
-              metrics=result.get("metrics"))
-    save_state(state, run_dir / "state.json")
     result["state"] = current
     result["report"] = str(bem_dir / "bem_manual_report.md")
     return result

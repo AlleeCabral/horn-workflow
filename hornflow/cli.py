@@ -102,8 +102,12 @@ def main(argv=None) -> int:
             print(f"resuming run: {run_dir}")
         if not args.quiet:
             print(f"manual BEM import: {args.bem_import}")
-        res = bem_import.import_into_run(run_dir, args.bem_import,
-                                         tolerance_db=args.bem_tolerance_db)
+        try:
+            res = bem_import.import_into_run(run_dir, args.bem_import,
+                                             tolerance_db=args.bem_tolerance_db)
+        except ValueError as exc:
+            print(f"error: {exc}", file=sys.stderr)
+            return 2
         v = res["validation"]
         for c in v["checks"]:
             print(f"  [{'pass' if c['passed'] else 'FAIL'}] {c['name']}: {c['detail']}")

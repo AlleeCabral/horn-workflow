@@ -333,13 +333,16 @@ def test_validate_refuses_without_a_manifest(tmp_path):
     assert {"belongs_to_run", "run_manifest_matches"} <= set(v.hard_failures())
 
 
-def test_validate_records_unparsed_files(tmp_path):
+def test_validate_refuses_a_file_it_cannot_parse(tmp_path):
+    """Review of #12: every file read must be parsed and checked, so junk fails."""
     m, export = _manifest_for(tmp_path)
     (export / "junk.txt").write_text("nothing numeric here\n", encoding="utf-8")
     write_export(export, "Akabak-p-Mic1.vips",
                  vips_text(spl_rows([60, 100, 200], [90, 90, 90])))
     v = bem_manual.validate_exports(export, m)
-    assert v.passed and any("junk.txt" in e for e in v.errors)
+    assert not v.passed
+    assert "every_file_parsed" in v.hard_failures()
+    assert any("junk.txt" in e for e in v.errors)
 
 
 
@@ -543,6 +546,81 @@ def test_cli_import_outside_run_dir_does_not_start_a_run(tmp_path, capsys):
     assert rc == 2
     assert not (tmp_path / "runs").exists()
     assert "not inside a run" in err
+
+
+def test_a_duplicate_basename_in_a_subfolder_is_checked(run_copy):
+    """Review of #12: parsed keyed by base name hid a foreign copy in a subfolder."""
+    exp = copy_exports(run_copy)
+    old = exp / "0old"
+    old.mkdir()
+    shutil.copy2(REAL_EXPORT / "Akabak-Jbl1200B_horn_19Sept26-Mic1.vips",
+                 old / "Akabak-Rad1_23Sept26-Mic1.vips")
+    res = bem_import.import_into_run(run_copy, exp, tolerance_db=12.0)
+    names = {c["name"]: c for c in res["validation"]["checks"]}
+    assert names["belongs_to_run"]["passed"] is False
+    assert res["validation"]["passed"] is False
+
+
+def test_an_unparseable_file_in_the_export_is_refused(run_copy):
+    """Review of #12: every file the validator reads must be parsed and checked."""
+    exp = copy_exports(run_copy)
+    (exp / "notes.txt").write_text("no numbers here\n", encoding="utf-8")
+    res = bem_import.import_into_run(run_copy, exp, tolerance_db=12.0)
+    assert res["validation"]["passed"] is False
+    names = {c["name"]: c for c in res["validation"]["checks"]}
+    assert names["every_file_parsed"]["passed"] is False
+
+
+def test_header_time_is_read_as_local_time(monkeypatch):
+    """Review of #12: AKABAK writes local time, not UTC."""
+    import time
+    if not hasattr(time, "tzset"):
+        pytest.skip("tzset is not available on this platform")
+    monkeypatch.setenv("TZ", "America/New_York")
+    time.tzset()
+    try:
+        stamp = bem.vips_header_time(
+            "// Akabak-Demo   Spectrum Data  6/1/2026 12:00:00 PM")
+    finally:
+        monkeypatch.delenv("TZ", raising=False)
+        time.tzset()
+    # 12:00 in New York in June is 16:00 UTC
+    assert stamp is not None and stamp.startswith("2026-06-01T16:00")
+
+
+def test_a_rejected_first_import_does_not_pin_the_group(run_copy):
+    """Review of #12: a rejected comparison proves nothing about acceptance."""
+    exp = copy_exports(run_copy)
+    res = bem_import.import_into_run(run_copy, exp, tolerance_db=1.0)
+    assert res["state"] == "BEM_REJECTED"
+    man = manual.read_manifest(run_copy / "deliverables" / "bem" / manual.MANIFEST_NAME)
+    assert man.expected_graph_group is None
+
+
+def test_the_first_accepted_import_pins_the_group_in_this_run(run_copy):
+    bem_import.import_into_run(run_copy, copy_exports(run_copy), tolerance_db=12.0)
+    man = manual.read_manifest(run_copy / "deliverables" / "bem" / manual.MANIFEST_NAME)
+    assert man.expected_graph_group == "AKABAK-Rad1_23Sept26 $$$ID9075238390$$$"
+
+
+def test_a_copy_import_pins_only_the_copy(run_copy, pipeline_run):
+    """Review of #12: the pin must go to the run being imported, not the source."""
+    session = pipeline_run / "deliverables" / "bem" / manual.MANIFEST_NAME
+    before = session.read_bytes()
+    bem_import.import_into_run(run_copy, copy_exports(run_copy), tolerance_db=12.0)
+    assert session.read_bytes() == before
+    copy_man = manual.read_manifest(run_copy / "deliverables" / "bem" / manual.MANIFEST_NAME)
+    assert copy_man.expected_graph_group == "AKABAK-Rad1_23Sept26 $$$ID9075238390$$$"
+
+
+def test_cli_bad_tolerance_is_one_error_line(run_copy, capsys):
+    """Review of #12: an out-of-range tolerance is a CLI error, not a traceback."""
+    from hornflow.cli import main
+    export = copy_exports(run_copy)
+    rc = main([str(EXAMPLE), "--bem-import", str(export), "--bem-tolerance-db", "0"])
+    err = capsys.readouterr().err.strip().splitlines()
+    assert rc == 2
+    assert err and err[0].startswith("error:")
 
 
 # --------------------------------------------------------------------------- #

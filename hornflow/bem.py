@@ -721,12 +721,16 @@ _HEADER_STAMP = re.compile(
 
 
 def vips_header_time(text: str) -> str | None:
-    """The timestamp AKABAK writes in the ``.vips`` comment block, as ISO 8601.
+    """The timestamp AKABAK writes in the ``.vips`` comment block, as ISO 8601 UTC.
 
     The header is a comment (``// Akabak-Demo  Spectrum Data  9/23/2026 ...``),
-    so the key=value loop below never sees it.  AKABAK writes local time with no
-    zone; it is recorded as UTC, and the staleness check keeps its two-minute
-    slack, which is what the committed fixture exports rely on.
+    so the key=value loop below never sees it.
+
+    AKABAK writes **local** time with no zone.  It is read in the local zone of
+    the importing machine (the same workstation that ran the export) and then
+    converted to UTC; reading it as UTC made a genuine export look stale west of
+    UTC and a stale one look fresh east of it (review of #12).  The staleness
+    check also keeps its two-minute slack.
     """
     for raw in _clean_lines(text):
         s = raw.strip()
@@ -740,11 +744,10 @@ def vips_header_time(text: str) -> str | None:
         if ampm and ampm.lower() == "pm":
             h += 12
         try:
-            dt = datetime(int(year), int(month), int(day), h, int(minute), int(second),
-                          tzinfo=timezone.utc)
+            local = datetime(int(year), int(month), int(day), h, int(minute), int(second))
         except ValueError:
             return None
-        return dt.isoformat()
+        return local.astimezone(timezone.utc).isoformat()
     return None
 
 
@@ -900,22 +903,28 @@ def choose_best(items: list, mtimes: dict | None = None, *,
 
 
 def folder_mtimes(folder) -> dict:
-    """``{filename: mtime}`` for every importable file (newest-wins tie-break)."""
-    return {p.name: p.stat().st_mtime for p in candidate_files(folder)}
+    """``{relative path: mtime}`` for every importable file (newest-wins tie-break)."""
+    folder = Path(folder)
+    return {p.relative_to(folder).as_posix(): p.stat().st_mtime
+            for p in candidate_files(folder)}
 
 
 def parse_folder(folder) -> tuple:
     """Parse every importable file in ``folder``.
 
-    Returns ``(parsed_by_name, errors)``; a parse failure is recorded rather than
-    raised, so a partly-bad folder can still be validated field by field.
+    Returns ``(parsed_by_relative_path, errors)``; a parse failure is recorded
+    rather than raised, so a partly-bad folder can still be validated field by
+    field.  The key keeps the relative path: keying by base name let a copy in a
+    subfolder overwrite the genuine file of the same name (review of #12).
     """
+    folder = Path(folder)
     parsed, errors = {}, []
     for p in candidate_files(folder):
+        key = p.relative_to(folder).as_posix()
         try:
-            parsed[p.name] = parse_any(p.read_text(errors="replace"), p.name)
+            parsed[key] = parse_any(p.read_text(errors="replace"), key)
         except Exception as exc:                     # noqa: BLE001 - reported, not raised
-            errors.append(f"{p.name}: {exc}")
+            errors.append(f"{key}: {exc}")
     return parsed, errors
 
 
