@@ -105,7 +105,7 @@ def run_sensitivity(param_path, levers=LEVERS, *, snapshot: bool = False) -> lis
             "delta_relaxed": rel_delta,
             "evidence": "ONE_DIMENSIONAL_SIMULATION",
         }
-        if not rel_delta:
+        if not _moved(rel_delta):
             rec["note"] = "the relaxed case did not move a reported metric"
         out.append(rec)
     # attach the base to every record for a self-contained table
@@ -128,7 +128,12 @@ def _no_effect(case: dict, base: dict) -> bool:
     """True when the case changed the geometry but moved no reported metric."""
     if "error" in case:
         return False
-    return not _delta(case, base)
+    return not _moved(_delta(case, base))
+
+
+def _moved(delta: dict) -> bool:
+    """True when at least one delta is a real move, not rounding noise."""
+    return any(abs(v) > 1e-9 for v in delta.values())
 
 
 def _delta(case: dict, base: dict) -> dict:

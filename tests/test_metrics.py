@@ -46,6 +46,22 @@ def test_band_metrics_reports_the_real_cutoff():
     assert 55 < m["cutoff_minus3db_hz"] < 65
 
 
+def test_cutoff_reports_nan_input_instead_of_none():
+    """No usable sample is NaN, not the same answer as 'never drops' (P3)."""
+    f = np.geomspace(20, 500, 50)
+    fc = minus3db_cutoff(f, np.full_like(f, np.nan), 80, 250)
+    assert fc is not None and np.isnan(fc)
+
+
+def test_one_nan_does_not_hide_a_real_cutoff():
+    """A NaN inside the band must not turn the whole band mean into NaN (P3)."""
+    f = np.geomspace(20, 500, 400)
+    spl = 100 + 10 * np.log10(1 / (1 + (60 / f) ** 8))
+    spl[200] = np.nan                       # well inside the band, above the crossing
+    fc = minus3db_cutoff(f, spl, 80, 250)
+    assert fc is not None and 55 < fc < 65
+
+
 def test_a_mixed_axis_does_not_crash_the_effect_summary(tmp_path):
     """`auto` and a number on one axis must not raise (audit P11).
 
@@ -67,6 +83,19 @@ def test_a_mixed_axis_does_not_crash_the_effect_summary(tmp_path):
                sweep.SweepRow(label="1800", overrides={"horn.length": 1800}, ok=True,
                               metrics={"spl_variation_db": 3.0})]
     assert "length" in sweep._effect(numeric, "horn.length")
+
+
+def test_a_numeric_axis_is_sorted_by_value_not_as_text():
+    """900/1200/1500 must read 900 -> 1500, not 1200 -> 900 (audit P11)."""
+    from hornflow import sweep
+
+    rows = [sweep.SweepRow(label=str(v), overrides={"horn.length": v}, ok=True,
+                           metrics={"spl_variation_db": var})
+            for v, var in ((900, 9.0), (1200, 7.0), (1500, 5.0))]
+    text = sweep._effect(rows, "horn.length")
+    assert "900 -> 1500" in text
+    assert "larger length gives a flatter" in text
+
 
 if __name__ == "__main__":
     import pytest

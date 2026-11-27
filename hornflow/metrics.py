@@ -12,12 +12,17 @@ import numpy as np
 
 
 def minus3db_cutoff(f, spl, f_lo: float, f_hi: float) -> float | None:
-    """The low-frequency -3 dB point of ``spl`` over ``[f_lo, f_hi]``, or None.
+    """The low-frequency -3 dB point of ``spl`` over ``[f_lo, f_hi]``.
 
     The band mean is the reference.  The scan starts at the lowest in-band point
     and walks down in frequency, returning the first crossing at or below
     ``mean - 3 dB``, interpolated linearly in log f.  ``None`` means the response
-    never drops that far on the grid, so the run has no cutoff to report.
+    never drops that far on the grid, so the run has no cutoff to report.  ``NaN``
+    means the band held no usable sample: that is a different fact from "never
+    drops" and must not be reported as ``None``.
+
+    The band mean ignores NaN samples, so one bad frequency does not hide a real
+    crossing.
     """
     f = np.asarray(f, float)
     spl = np.asarray(spl, float)
@@ -26,7 +31,10 @@ def minus3db_cutoff(f, spl, f_lo: float, f_hi: float) -> float | None:
     in_band = (f >= f_lo) & (f <= f_hi)
     if not np.any(in_band):
         return None
-    level = float(np.mean(spl[in_band])) - 3.0
+    band = spl[in_band]
+    if np.all(np.isnan(band)):
+        return float("nan")
+    level = float(np.nanmean(band)) - 3.0
     upper = int(np.argmax(in_band))               # the lowest in-band index
     lower = None
     if spl[upper] <= level:

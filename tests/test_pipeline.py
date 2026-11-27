@@ -280,6 +280,25 @@ def test_the_sensitivity_levers_are_relative_and_really_move_the_run(pipeline_ru
     mouth = runs["mouth_area"]
     assert mouth["relaxed"]["geometry_changed"]["mouth_area_cm2"] != 0.0
     assert mouth["relaxed"]["no_effect"] is False
+    # the report shows what moved and whether anything moved at all
+    report = (pipeline_run / "deliverables" / "report.md").read_text(encoding="utf-8")
+    assert "geometry moved (relaxed)" in report
+    assert "no effect (stricter, relaxed)" in report
+
+
+def test_a_lever_that_moves_nothing_says_so():
+    """Equal metrics are a finding: no_effect True and the note (audit P3).
+
+    A lever whose two cases equal the base (factor 1.0) cannot move a metric, so
+    the record must not pretend it did.
+    """
+    from hornflow.optimize import sensitivity
+
+    levers = (("noop", "target.f_low", 1.0, 1.0, "Hz"),)
+    [rec] = sensitivity.run_sensitivity(EXAMPLE, levers=levers)
+    assert rec["relaxed"]["no_effect"] is True
+    assert rec["stricter"]["no_effect"] is True
+    assert rec["note"] == "the relaxed case did not move a reported metric"
 
 
 # ------------------------------------------------------------------- scoring
