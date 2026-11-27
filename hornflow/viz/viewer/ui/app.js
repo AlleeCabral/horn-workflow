@@ -215,7 +215,9 @@
                   text: cs.bem_state || view.mode }),
       h('span', { class: 'sep', text: '\u00b7' }),
       h('span', { class: 'next',
-                  text: 'next: ' + ((view.next_action && view.next_action.label) || '\u2014') }),
+                  text: view.mode === 'state_error'
+                    ? ((view.error || {}).message || 'state.json cannot be read')
+                    : 'next: ' + ((view.next_action && view.next_action.label) || '\u2014') }),
       h('span', { class: 'sep', text: '\u00b7' }),
       h('span', { class: 'opt', text: 'assumptions: ' + (cs.assumptions || 0) })
     ].forEach(function (b) { strip.appendChild(b); });
@@ -342,7 +344,8 @@
       }).catch(function (e) { note('Save failed: ' + e.message, 'bad'); });
     });
     actionBtn('Freeze brief', canFreeze, freezeWhy, function () {
-      post('/api/brief/freeze', { values: currentValues() }).then(function (out) {
+      post('/api/brief/freeze', { values: currentValues(), run_id: currentRunId() })
+        .then(function (out) {
         live.dirty = {};
         applyView(out.view);
         note(out.ok
@@ -358,6 +361,10 @@
   }
 
   // ------------------------------------------------------------ run + BEM loop
+  function currentRunId() {
+    return (view.run || {}).run_id || null;
+  }
+
   function currentValues() {
     var out = {};
     (view.questions || []).forEach(function (q) {
@@ -422,7 +429,7 @@
     if (!canRun) { run.setAttribute('disabled', 'disabled'); }
     run.addEventListener('click', function () {
       note('Run started\u2026', 'ok');
-      post('/api/run', {}).then(function () {
+      post('/api/run', { run_id: currentRunId() }).then(function () {
         poll(true);
       }).catch(function (e) { note('Run failed to start: ' + e.message, 'bad'); });
     });
@@ -434,7 +441,7 @@
                               title: 'Validates the exported .vips spectra and '
                                      + 'compares them with the 1-D reference.' });
       imp.addEventListener('click', function () {
-        post('/api/import', {}).then(function (out) {
+        post('/api/import', { run_id: currentRunId() }).then(function (out) {
           applyView(out.view);
           note(out.ok ? 'Imported and compared: BEM_VALIDATED'
                       : 'Imported: BEM_REJECTED - the difference is over tolerance',
@@ -455,7 +462,8 @@
                               title: 'Records a decision. It does NOT validate the '
                                      + 'acoustic result.' });
       acc.addEventListener('click', function () {
-        post('/api/decision', { kind: 'accept_unvalidated', reason: sel.value })
+        post('/api/decision', { run_id: currentRunId(), kind: 'accept_unvalidated',
+                                reason: sel.value })
           .then(function (out) {
             applyView(out.view);
             note('Decision recorded. The acoustic result stays unvalidated.', 'warn');
