@@ -151,6 +151,9 @@ class AppActions:
 
         A tab can be showing run X while the server has moved to Y.  Every
         mutating call names its run so that write can never land in Y (audit S1).
+        A run that is still being written is refused as well: the pipeline saves
+        the whole state after every stage, so a decision written into it now
+        would be replaced by the next save without a trace (review of #13).
         """
         if run_id in (None, ""):
             raise ApiError("run_id_required",
@@ -164,6 +167,13 @@ class AppActions:
                            f"this call names run {got!r} but the host is on "
                            f"{self.run_dir.name!r}; reload the page",
                            status=409, expected=self.run_dir.name, got=got)
+        with self._lock:
+            in_flight = (self._run.get("state") == "running"
+                         and self._run.get("run_id") == self.run_dir.name)
+        if in_flight or self._run_status(self.run_dir) == "running":
+            raise ApiError("run_in_progress",
+                           f"run {self.run_dir.name!r} is still being written; "
+                           "wait for the pipeline to finish", status=409)
         return self.run_dir
 
     # ------------------------------------------------------------------ view
@@ -285,6 +295,11 @@ class AppActions:
                 with self._lock:
                     self._run.update({"state": "failed", "error": str(exc),
                                       "finished_utc": _now()})
+                # A run that died still left a state behind: point at it, so
+                # /api/progress cannot show the previous run next to "failed".
+                newest = self._newest_run()
+                if newest is not None:
+                    self._adopt_run(newest.name)
 
         if wait:
             work()

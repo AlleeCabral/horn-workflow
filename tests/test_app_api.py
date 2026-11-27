@@ -379,6 +379,42 @@ def test_runs_show_how_each_run_ended(project):
     assert entry["status"] == "interrupted"
 
 
+def test_a_decision_on_a_run_still_being_written_is_refused(project):
+    """The pipeline saves the whole state after every stage: a write now is lost."""
+    proj, run_id = project
+    state_path = proj / "runs" / run_id / "state.json"
+    update_state(state_path, lambda st: st.set_run_status("running"))
+    before = len(load_state_file(state_path).decision_log)
+    a = _actions(project)
+    with pytest.raises(ApiError) as exc:
+        a.decision(run_id=run_id, kind="accept_unvalidated", reason=ACCEPT_REASONS[0])
+    assert exc.value.code == "run_in_progress"
+    assert exc.value.status == 409
+    # and nothing was written into the state the pipeline owns
+    assert len(load_state_file(state_path).decision_log) == before
+
+
+def test_a_failed_run_is_adopted_so_progress_does_not_show_the_last_one(project):
+    def runner(path, out_root, limits, progress):
+        from hornflow.domain.state import DesignState
+        from hornflow.io.state_store import save_state
+
+        run_dir = Path(out_root) / "run_29991231T235959Z_failed"
+        st = DesignState()
+        st.run = {"run_id": run_dir.name, "status": "failed"}
+        st.set_stage("INPUT_AUDIT", "failed")
+        save_state(st, run_dir / "state.json")
+        raise RuntimeError("solver exploded")
+
+    a = _actions(project, runner=runner)
+    a.freeze(dict(ANSWERS))
+    a.start_run(wait=True)
+    prog = a.progress()
+    assert prog["state"] == "failed"
+    assert [s["stage"] for s in prog["stages"]] == ["INPUT_AUDIT"]
+    assert prog["run_dir"].endswith("run_29991231T235959Z_failed")
+
+
 # --------------------------------------------------------------------------- #
 #  4. decisions - an audit record that never rewrites a measurement
 # --------------------------------------------------------------------------- #
