@@ -88,9 +88,10 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--bem-import", default=None, metavar="FOLDER",
                    help="import AKABAK/VACS exported spectra from FOLDER and compare "
                         "them with the Stage-1 model")
-    p.add_argument("--bem-tolerance-db", type=float, default=6.0, metavar="dB",
+    p.add_argument("--bem-tolerance-db", type=float, default=None, metavar="dB",
                    help="max |difference| between the BEM on-axis curve and the Stage-1 "
-                        "model for the import to count as validated (default 6 dB)")
+                        "model (0.5 to 20 dB; default: the manifest's value, then 6 dB. "
+                        "Above 6 dB the import counts as accepted with a relaxed tolerance)")
     p.add_argument("--bem-mesh-frequency", type=float, default=500.0, metavar="Hz",
                    help="mesh frequency for the Stage-2 BEM mesh (default 500 Hz)")
     p.add_argument("--bem-baffle", type=float, default=400.0, metavar="mm",
@@ -296,7 +297,10 @@ def main(argv: list | None = None) -> int:
             log(f"  note: {b['gmsh_note']}; horn.stl and horn.msh come from the workflow "
                 "itself, Gmsh is only needed for the extra .geo export")
 
-    if args.stage == "stage2":
+    # An import must never regenerate the inputs it is being compared with
+    # (audit B5): with --bem-import, the existing bem/ folder and its manifest
+    # are read, and nothing is written over them.
+    if args.stage == "stage2" and not args.bem_import:
         from hornflow import bem as bem_mod
 
         log("")

@@ -10,6 +10,7 @@ comparison - never from the mere existence of a solved GUI project.
 
 from __future__ import annotations
 
+import math
 from dataclasses import dataclass, field, asdict
 from datetime import datetime, timezone
 from pathlib import Path
@@ -18,12 +19,41 @@ import numpy as np
 
 from ... import bem as _bem
 from ...domain.evidence import EvidenceLabel
-from .manual import MANIFEST_NAME, ManualSolveState, read_manifest
+from .manual import MANIFEST_NAME, ManualSolveState, read_manifest, write_manifest
 
 HARD = "hard"
 SOFT = "soft"
+# Decision D1 (final, 2026-11-27): the default tolerance, and the only range a
+# caller may ask for.  A tolerance above the default can still accept a result,
+# but never as BEM_VALIDATED (see BEM_ACCEPTED_WITH_TOLERANCE).
 DEFAULT_TOLERANCE_DB = 6.0
+TOLERANCE_RANGE_DB = (0.5, 20.0)
 MIN_FREQ_HZ, MAX_FREQ_HZ = 1.0, 1.0e6
+
+
+def check_tolerance(value) -> float:
+    """Return ``value`` as a finite tolerance inside :data:`TOLERANCE_RANGE_DB`.
+
+    ``0`` is out of range, not "use the default": only ``None`` means "fall back".
+    """
+    try:
+        v = float(value)
+    except (TypeError, ValueError):
+        raise ValueError(f"tolerance must be a number, got {value!r}") from None
+    lo, hi = TOLERANCE_RANGE_DB
+    if not math.isfinite(v) or not (lo <= v <= hi):
+        raise ValueError(f"tolerance {value!r} is outside the allowed "
+                         f"{lo:g} to {hi:g} dB")
+    return v
+
+
+def resolve_tolerance(value, manifest=None) -> float:
+    """The effective tolerance: the explicit value, then the manifest's, then the default."""
+    if value is None:
+        value = getattr(manifest, "tolerance_db", None)
+    if value is None:
+        value = DEFAULT_TOLERANCE_DB
+    return check_tolerance(value)
 
 
 @dataclass
@@ -51,6 +81,8 @@ class ExportValidation:
     source: str | None = None
     best: dict | None = None
     best_name: str | None = None
+    # the one Graph_Group every file shares, when they all share one (audit B4)
+    graph_group: str | None = None
 
     def hard_failures(self) -> list:
         return [c.name for c in self.checks
@@ -63,6 +95,7 @@ class ExportValidation:
             "hard_failures": self.hard_failures(),
             "warnings": list(self.warnings), "errors": list(self.errors),
             "files": list(self.files), "source": self.source,
+            "graph_group": self.graph_group,
         }
 
 
@@ -80,6 +113,22 @@ def _parse_utc(text) -> datetime | None:
 
 def _mtime_utc(path: Path) -> datetime:
     return datetime.fromtimestamp(path.stat().st_mtime, tz=timezone.utc)
+
+
+def _graph_group(parsed: dict) -> str:
+    """The AKABAK ``Graph_Group`` a file declares (empty when it declares none)."""
+    return str((parsed.get("meta") or {}).get("Graph_Group", "")).strip()
+
+
+def _file_time(path: Path, parsed: dict) -> datetime:
+    """The ``.vips`` header timestamp when the file carries one, else its mtime.
+
+    The header is what AKABAK writes when it exports; mtime is only what the
+    copy did.  A file with no header stamp falls back to its mtime.
+    """
+    stamp = (parsed.get(path.name) or {}).get("header_time")
+    dt = _parse_utc(stamp) if stamp else None
+    return dt or _mtime_utc(path)
 
 
 def _same_dir(a, b) -> bool:
@@ -160,18 +209,21 @@ def validate_exports(folder, manifest=None, *, slack_s: float = 120.0) -> Export
         "files_non_empty", bool(files) and not empty,
         "all files non-empty" if not empty else f"empty file(s): {', '.join(empty)}"))
 
-    best, best_name = _bem.choose_best(list(parsed.items()), _bem.folder_mtimes(folder))
+    # only a radiated pressure capture may be compared with the 1-D model
+    onaxis = {n: p for n, p in parsed.items() if _bem.is_onaxis_pressure(p)}
+    best, best_name = _bem.choose_best(list(parsed.items()), _bem.folder_mtimes(folder),
+                                       onaxis_only=True)
 
     # 3. frequency grid valid
     ok, detail = _grid_detail(best)
     checks.append(Check("frequency_grid_valid", ok, detail))
 
-    # 4. required spectrum present (a pressure / SPL curve)
-    spl_files = [n for n, p in parsed.items() if _bem._looks_like_spl(p)]
+    # 4. required spectrum present (an on-axis pressure / SPL curve)
     checks.append(Check(
-        "required_spectrum_present", bool(spl_files),
-        f"pressure/SPL curve found in: {', '.join(spl_files)}" if spl_files
-        else "no pressure/SPL curve found (need Mic1 or H 0-90)"))
+        "required_spectrum_present", bool(onaxis),
+        f"on-axis pressure curve found in: {', '.join(sorted(onaxis))}" if onaxis
+        else "no on-axis pressure curve: need a file whose Graph_Caption names a Mic "
+             "and whose Data_BaseUnit is Pa"))
 
     # 5. values numeric and finite
     bad = []
@@ -185,44 +237,54 @@ def validate_exports(folder, manifest=None, *, slack_s: float = 120.0) -> Export
                         "all values finite" if not bad
                         else "non-finite in " + ", ".join(bad[:5])))
 
-    # 6. export timestamp is after input generation
+    # 6. export timestamp is after input generation (header first, then mtime)
     if manifest is None:
         checks.append(Check("export_timestamp_after_inputs", False,
                             "no run manifest, so no generation time to compare",
                             severity=SOFT))
     else:
         gen = _parse_utc(manifest.generated_utc)
-        stale = [p.name for p in files if gen and _mtime_utc(p) < gen - _secs(slack_s)]
+        stale = [p.name for p in files
+                 if gen and _file_time(p, parsed) < gen - _secs(slack_s)]
         checks.append(Check(
             "export_timestamp_after_inputs", bool(files) and not stale,
             f"all exports newer than {manifest.generated_utc}" if not stale
             else f"older than the generated inputs: {', '.join(stale)}"))
 
-    # 7. file belongs to the current run
+    # 7. every file belongs to this run's Graph_Group (hard: audit B4)
+    graph_group = None
     if manifest is None:
         checks.append(Check("belongs_to_run", False,
-                            "no run manifest - provenance cannot be proven",
-                            severity=SOFT))
+                            "no run manifest - provenance cannot be proven"))
     else:
-        token = any(manifest.run_id in p.name for p in files)
-        dirmatch = _same_dir(folder, manifest.export_dir)
-        gen = _parse_utc(manifest.generated_utc)
-        newer = bool(files) and bool(gen) and all(
-            _mtime_utc(p) >= gen - _secs(slack_s) for p in files)
-        ok = token or dirmatch or newer
-        detail = ("run id in filename" if token else
-                  "export directory matches the manifest" if dirmatch else
-                  "timestamp newer than the manifest (weak evidence)" if newer else
-                  "no run id, wrong directory, and not newer than the inputs")
-        checks.append(Check("belongs_to_run", ok, detail, severity=SOFT))
+        groups = {n: _graph_group(p) for n, p in parsed.items()}
+        missing = sorted(n for n, g in groups.items() if not g)
+        distinct = sorted({g for g in groups.values() if g})
+        expected = (manifest.expected_graph_group or "").strip()
+        if not parsed:
+            ok, detail = False, "nothing parsed, so provenance cannot be proven"
+        elif missing:
+            ok, detail = False, "no Graph_Group in: " + ", ".join(missing[:5])
+        elif expected:
+            ok = distinct == [expected]
+            detail = (f"every file is Graph_Group {expected!r}" if ok else
+                      f"Graph_Group(s) {', '.join(distinct)} do not match the "
+                      f"manifest's {expected!r}")
+        elif len(distinct) == 1:
+            ok, graph_group = True, distinct[0]
+            detail = f"every file is Graph_Group {graph_group!r} (recorded)"
+        else:
+            ok, detail = False, (f"{len(distinct)} different Graph_Groups, so the "
+                                 "folder mixes runs: " + ", ".join(distinct))
+        checks.append(Check("belongs_to_run", ok, detail))
 
     # 8. run manifest matches (and its input hashes are unchanged)
     if manifest is None:
         checks.append(Check("run_manifest_matches", False,
-                            f"no {MANIFEST_NAME} supplied", severity=SOFT))
+                            f"no {MANIFEST_NAME} supplied"))
     else:
         ok, detail = _manifest_matches(manifest)
-        checks.append(Check("run_manifest_matches", ok, detail, severity=SOFT))
+        checks.append(Check("run_manifest_matches", ok, detail))
 
     passed = all(c.passed for c in checks if c.severity == HARD)
     warnings = [f"{c.name}: {c.detail}" for c in checks
@@ -232,7 +294,7 @@ def validate_exports(folder, manifest=None, *, slack_s: float = 120.0) -> Export
                else ManualSolveState.MANUAL_SOLVE_PENDING.value),
         passed=passed, rejected=not passed, checks=checks, warnings=warnings,
         errors=errors, files=[p.name for p in files],
-        source=best_name, best=best)
+        source=best_name, best=best, graph_group=graph_group)
 
 
 def _secs(slack_s: float):
@@ -282,16 +344,27 @@ def compare_reference(reference, parsed: dict, tolerance_db: float = DEFAULT_TOL
 
 
 def import_and_validate(params, reference, folder, out_dir, *, manifest=None,
-                        tolerance_db: float = DEFAULT_TOLERANCE_DB,
+                        tolerance_db: float | None = None,
                         write_outputs: bool = True) -> dict:
     """Validate, then (if accepted) compare - and return the resulting state.
 
+    ``tolerance_db`` is the explicit request, then the manifest's value, then
+    :data:`DEFAULT_TOLERANCE_DB` (:func:`resolve_tolerance`).  A tolerance above
+    the default never yields ``BEM_VALIDATED``: it yields
+    ``BEM_ACCEPTED_WITH_TOLERANCE`` and says so in
+    ``validation.relaxed_tolerance`` (decision D1).
+
     ``state`` is ``MANUAL_SOLVE_PENDING`` when validation fails (retry the
-    export), otherwise ``BEM_VALIDATED`` or ``BEM_REJECTED`` from the comparison.
+    export), otherwise the comparison decides between validated, accepted with a
+    relaxed tolerance, and rejected.
     """
+    tolerance_db = resolve_tolerance(tolerance_db, manifest)
+    relaxed = tolerance_db > DEFAULT_TOLERANCE_DB
     validation = validate_exports(folder, manifest)
     out: dict = {"validation": validation.to_dict(), "state": validation.state,
                  "rejected": validation.rejected, "metrics": None, "comparison": None}
+    out["validation"]["tolerance_db"] = tolerance_db
+    out["validation"]["relaxed_tolerance"] = relaxed
     if not validation.passed:
         return out
     metrics = compare_reference(reference, validation.best, tolerance_db)
@@ -300,9 +373,25 @@ def import_and_validate(params, reference, folder, out_dir, *, manifest=None,
         out["comparison"] = _bem._write_comparison(
             params, reference, validation.best, validation.source or "export",
             Path(out_dir))
-    out["state"] = (ManualSolveState.BEM_VALIDATED.value if metrics["within_tolerance"]
-                    else ManualSolveState.BEM_REJECTED.value)
+    if not metrics["within_tolerance"]:
+        out["state"] = ManualSolveState.BEM_REJECTED.value
+    elif relaxed:
+        out["state"] = ManualSolveState.BEM_ACCEPTED_WITH_TOLERANCE.value
+    else:
+        out["state"] = ManualSolveState.BEM_VALIDATED.value
+    _record_graph_group(manifest, validation)
     return out
+
+
+def _record_graph_group(manifest, validation) -> None:
+    """Pin the run's Graph_Group the first time an import proves it (audit B4)."""
+    if manifest is None or validation.graph_group is None:
+        return
+    if (manifest.expected_graph_group or "").strip():
+        return
+    manifest.expected_graph_group = validation.graph_group
+    if manifest.bem_dir:
+        write_manifest(manifest, Path(manifest.bem_dir) / MANIFEST_NAME)
 
 
 # --------------------------------------------------------------------------- #

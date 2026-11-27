@@ -38,9 +38,11 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--bem-import", default=None, metavar="FOLDER",
                    help="validate + import AKABAK .vips spectra from FOLDER, compare with "
                         "the 1-D reference and advance the manual-solve state machine")
-    p.add_argument("--bem-tolerance-db", type=float, default=6.0, metavar="dB",
+    p.add_argument("--bem-tolerance-db", type=float, default=None, metavar="dB",
                    help="max |difference| between the BEM on-axis curve and the 1-D "
-                        "reference for the candidate to be BEM_VALIDATED (default 6 dB)")
+                        "reference for the candidate to be BEM_VALIDATED "
+                        "(0.5 to 20 dB; default: the manifest's value, then 6 dB. "
+                        "Above 6 dB the result can only be BEM_ACCEPTED_WITH_TOLERANCE)")
     p.add_argument("--quiet", action="store_true", help="print only the summary")
     p.add_argument("--emit-ui", nargs="?", const="", default=None, metavar="RUN_DIR",
                    help="re-render the UI shell (Viewer/Workflow/Results tabs) for a run "
@@ -92,13 +94,12 @@ def main(argv=None) -> int:
     if args.bem_import:
         from .workflow import bem_import
         run_dir = bem_import.find_run_dir(args.bem_import)
-        if run_dir is not None:
-            if not args.quiet:
-                print(f"resuming run: {run_dir}")
-        else:
-            summary = run_pipeline(args.definition, out_root=args.out,
-                                   limits=limits, progress=progress)
-            run_dir = summary["run_dir"]
+        if run_dir is None:
+            print(f"error: {args.bem_import} is not inside a run directory (no state.json "
+                  "above it); an import never starts a new run", file=sys.stderr)
+            return 2
+        if not args.quiet:
+            print(f"resuming run: {run_dir}")
         if not args.quiet:
             print(f"manual BEM import: {args.bem_import}")
         res = bem_import.import_into_run(run_dir, args.bem_import,

@@ -79,14 +79,20 @@ def find_run_dir(folder) -> "Path | None":
     return None
 
 
-def import_into_run(run_dir, folder, *, tolerance_db: float = 6.0,
+def import_into_run(run_dir, folder, *, tolerance_db: float | None = None,
                     out_subdir: str = "bem") -> dict:
-    """Validate + compare an export folder against an existing run directory."""
+    """Validate + compare an export folder against an existing run directory.
+
+    ``tolerance_db=None`` means "the manifest's tolerance, else the default".
+    A tolerance above the default accepts a result only as
+    ``BEM_ACCEPTED_WITH_TOLERANCE`` (decision D1).
+    """
     run_dir = Path(run_dir)
     state = load_state_file(run_dir / "state.json")
     params = config.load(state.run.get("input_path") or state.project.get("input_path", ""))
     bem_dir = run_dir / "deliverables" / out_subdir
     manifest = manual_mod.read_manifest(bem_dir / manual_mod.MANIFEST_NAME)
+    tolerance_db = bem_manual.resolve_tolerance(tolerance_db, manifest)
     reference = reference_from_state(state)
     if reference is None:
         raise ValueError("the run state has no one-dimensional reference to compare against")

@@ -20,6 +20,7 @@ from __future__ import annotations
 
 import csv
 import math
+from datetime import datetime, timezone
 from pathlib import Path
 
 import numpy as np
@@ -715,6 +716,38 @@ def _vips_split(line: str) -> list:
     return line.split()
 
 
+_HEADER_STAMP = re.compile(
+    r"(\d{1,2})/(\d{1,2})/(\d{4})\s+(\d{1,2}):(\d{2}):(\d{2})\s*([AaPp][Mm])?")
+
+
+def vips_header_time(text: str) -> str | None:
+    """The timestamp AKABAK writes in the ``.vips`` comment block, as ISO 8601.
+
+    The header is a comment (``// Akabak-Demo  Spectrum Data  9/23/2026 ...``),
+    so the key=value loop below never sees it.  AKABAK writes local time with no
+    zone; it is recorded as UTC, and the staleness check keeps its two-minute
+    slack, which is what the committed fixture exports rely on.
+    """
+    for raw in _clean_lines(text):
+        s = raw.strip()
+        if not s.startswith("//") or "Spectrum Data" not in s:
+            continue
+        m = _HEADER_STAMP.search(s)
+        if not m:
+            return None
+        month, day, year, hour, minute, second, ampm = m.groups()
+        h = int(hour) % 12
+        if ampm and ampm.lower() == "pm":
+            h += 12
+        try:
+            dt = datetime(int(year), int(month), int(day), h, int(minute), int(second),
+                          tzinfo=timezone.utc)
+        except ValueError:
+            return None
+        return dt.isoformat()
+    return None
+
+
 def parse_vips(text: str) -> dict:
     """Parse an AKABAK/VACS ``.vips`` spectrum file.
 
@@ -786,7 +819,7 @@ def parse_vips(text: str) -> dict:
 
     return {"freq": freq, "curves": curves, "magnitude": magnitude, "meta": meta,
             "kind": "vips", "is_pressure": is_pressure, "base_unit": base_unit,
-            "n_curves": n_curves}
+            "n_curves": n_curves, "header_time": vips_header_time(text)}
 
 
 def parse_any(text: str, name: str = "") -> dict:
@@ -808,6 +841,33 @@ def _has_point_mic(parsed: dict) -> bool:
     return any(re.search(r"mic", str(k), re.I) for k in parsed.get("curves", {}))
 
 
+def _mic_caption(parsed: dict):
+    """True/False when the file names its ``Graph_Caption``, None when it has none.
+
+    Synthetic exports carry no caption; a real AKABAK export always does.
+    """
+    caption = str((parsed.get("meta") or {}).get("Graph_Caption", "")).strip()
+    if not caption:
+        return None
+    return bool(re.search(r"\bmic\b", caption, re.I))
+
+
+def is_onaxis_pressure(parsed: dict) -> bool:
+    """A radiated pressure observation that may be compared with the 1-D model.
+
+    Needs a pressure unit and a graph caption that names a Mic.  A caption that
+    names something else excludes the file even when the unit is Pa, because
+    AKABAK exports the lumped-element pressure ``LE5`` in Pa too (audit B1); a
+    file with no caption falls back to its curve legends.
+    """
+    if not parsed.get("is_pressure"):
+        return False
+    named = _mic_caption(parsed)
+    if named is None:
+        return _has_point_mic(parsed)
+    return named
+
+
 def candidate_files(folder) -> list:
     """Every importable file under ``folder`` (recursive), deterministically sorted."""
     folder = Path(folder)
@@ -817,9 +877,17 @@ def candidate_files(folder) -> list:
                   if p.is_file() and p.suffix.lower() in IMPORT_EXTS)
 
 
-def choose_best(items: list, mtimes: dict | None = None) -> tuple:
-    """Rank parsed exports: pressure/SPL, then a point mic, then richness, then newest."""
+def choose_best(items: list, mtimes: dict | None = None, *,
+                onaxis_only: bool = False) -> tuple:
+    """Rank parsed exports: pressure/SPL, then a point mic, then richness, then newest.
+
+    ``onaxis_only`` restricts the choice to files that may honestly be compared
+    with the 1-D on-axis model (``is_onaxis_pressure``).  With no such file the
+    answer is ``(None, None)`` rather than a lumped-element curve.
+    """
     mtimes = mtimes or {}
+    if onaxis_only:
+        items = [(n, p) for n, p in items if is_onaxis_pressure(p)]
     best = best_name = None
     for name, parsed in items:
         key = (1 if _looks_like_spl(parsed) else 0,
