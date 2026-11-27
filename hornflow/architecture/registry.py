@@ -31,7 +31,8 @@ STUBS = (
 
 # Preference bonus for the preferred (folded horn) class, in score points.  The
 # reported composite is dominated by dB, so one point is a tie-breaker, never a
-# head start (decision D4).
+# head start (decision D4).  It is only ever added to a candidate that the raw
+# scores cannot separate from the leader (see :func:`score`).
 PREFERENCE_BONUS = {"folded_horn": 1.0}
 
 # Two feasible candidates whose raw scores differ by less than this cannot be
@@ -65,6 +66,11 @@ def score(results: list, preference_bonus: dict | None = None) -> list:
     elsewhere and are not affected by the bonus.  ``raw_score`` is the same
     composite without the bonus, so a caller can tell a real lead from a
     preference-decided one (decision D4).
+
+    The bonus is added **only** to a feasible candidate whose raw score is
+    within :data:`TIE_TOLERANCE_POINTS` of the raw leader.  A candidate that is
+    behind by that much or more is never reordered, so preference can break a
+    tie but never overrule the acoustic evidence (decision D4).
     """
     bonus = dict(PREFERENCE_BONUS if preference_bonus is None else preference_bonus)
     scored = []
@@ -73,15 +79,23 @@ def score(results: list, preference_bonus: dict | None = None) -> list:
         base = _num(m.get("spl_mean_db", m.get("spl_mean_band_db")))
         flat_pen = _num(m.get("spl_variation_db", m.get("spl_variation_band_db")))
         raw = base - flat_pen
-        extra = bonus.get(r.architecture_id, 0.0)
         scored.append({"architecture_id": r.architecture_id, "display_name": r.display_name,
                        "fidelity": r.fidelity, "feasible": r.feasible,
-                       "score": round(raw + extra, 3),
+                       "score": round(raw, 3),
                        "raw_score": round(raw, 3),
                        "spl_mean_db": m.get("spl_mean_db"),
                        "spl_variation_db": m.get("spl_variation_db"),
-                       "preference_bonus": extra,
+                       "preference_bonus": 0.0,
                        "implementation": r.implementation})
+    feasible = [s["raw_score"] for s in scored if s["feasible"]]
+    leader = max(feasible) if feasible else None
+    for s in scored:
+        extra = bonus.get(s["architecture_id"], 0.0)
+        if not extra or leader is None or not s["feasible"]:
+            continue
+        if leader - s["raw_score"] < TIE_TOLERANCE_POINTS:
+            s["score"] = round(s["raw_score"] + extra, 3)
+            s["preference_bonus"] = extra
     scored.sort(key=lambda d: (not d["feasible"], -d["score"]))
     return scored
 

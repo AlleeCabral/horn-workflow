@@ -52,15 +52,20 @@ future milestone.
 ## ADR-0005 — Folded horn preferred, not privileged
 **Problem.** The spec wants folding preferred but fair.
 **Decision.** `registry.PREFERENCE_BONUS` adds **1.0 point** to the reported composite
-(mean SPL minus variation, both in dB), applied **after** hard gates, so it can only
-break a tie. Two feasible candidates whose raw scores differ by less than
-`TIE_TOLERANCE_POINTS` (0.5) are a tie: `registry.decisive_winner` returns `None`, the
-report says "No acoustic winner", and `critique.critic._preference_check` fails with
-severity `reject` when the reported winner is not the decisive one (decision D4, final
-on 2026-11-27). Cost if wrong: the folded horn is listed first on a tie, and both the
-report and the critic say so.
-**Validation.** `test_pipeline.py::test_tie_is_reported_as_no_acoustic_winner` and
-`::test_the_preference_bonus_is_one_point_on_the_db_scale`; Appendix A of the report.
+(mean SPL minus variation, both in dB), applied **after** hard gates and **only** to a
+feasible candidate whose raw score is within `TIE_TOLERANCE_POINTS` (0.5) of the raw
+leader. A gap of 0.5 points or more is therefore never reordered: the bonus breaks a
+tie, it never overrules the evidence. Two feasible candidates whose raw scores differ
+by less than `TIE_TOLERANCE_POINTS` are a tie: `registry.decisive_winner` returns
+`None`, the report says "No acoustic winner", and
+`critique.critic._preference_check` fails with severity `reject` when the reported
+winner is not the decisive one, or when no candidate is feasible at all (decision D4,
+final on 2026-11-27). Cost if wrong: the folded horn is listed first on a tie, and both
+the report and the critic say so.
+**Validation.** `test_pipeline.py::test_tie_is_reported_as_no_acoustic_winner`,
+`::test_the_preference_bonus_is_one_point_on_the_db_scale`,
+`::test_a_point_five_gap_is_never_reordered_by_the_bonus` and
+`::test_no_feasible_candidate_is_said_plainly`; Appendix A of the report.
 
 ## ADR-0006 — Rotation-minimizing frame over Frenet
 **Problem.** Swept cross-sections need a stable local frame.
