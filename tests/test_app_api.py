@@ -28,6 +28,7 @@ sys.path.insert(0, str(ROOT))
 from hornflow.app.actions import ACCEPT_REASONS, ApiError, safe_under  # noqa: E402
 from hornflow.app.brief import BriefStore, slugify, validate_values      # noqa: E402
 from hornflow.app.server import create_server                            # noqa: E402
+from hornflow.app.view import VIEW_SCHEMA                                # noqa: E402
 
 ANSWERS = {
     "deployment": "club sub corner", "boundary": "corner",
@@ -452,11 +453,23 @@ def test_a_mutating_call_with_a_missing_run_id_is_refused(project, call):
 
 def test_corrupt_state_is_reported_not_treated_as_a_first_run(project):
     a = _actions(project)
+    normal = set(a.view())
     (a.run_dir / "state.json").write_text("{ broken", encoding="utf-8")
     v = a.view()
     assert v["mode"] == "state_error"
     assert v["error"]["code"] == "state_unreadable"
     assert "state.json" in v["error"]["message"]
+    # The page only draws the shell from a view that passes the app.js gate, and
+    # the strip takes its text from view.mode / view.error (app.js renderStrip).
+    # A hand-built dict without view_schema sent the browser to viewerOnly(),
+    # which removed the tabs and never rendered the message (review of HORN-17).
+    assert v["view_schema"] == VIEW_SCHEMA
+    # Nothing the shell reads may be missing; "error" is the only addition.
+    assert set(v) - normal == {"error"}
+    js = (ROOT / "hornflow" / "viz" / "viewer" / "ui" / "app.js").read_text(
+        encoding="utf-8")
+    assert "if (!view || !view.view_schema) { viewerOnly(); return; }" in js
+    assert "view.mode === 'state_error'" in js
 
 
 def test_a_missing_state_file_is_still_a_first_run(project):
