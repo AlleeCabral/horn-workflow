@@ -466,6 +466,7 @@ def test_corrupt_state_is_reported_not_treated_as_a_first_run(project):
     assert v["view_schema"] == VIEW_SCHEMA
     # Nothing the shell reads may be missing; "error" is the only addition.
     assert set(v) - normal == {"error"}
+    assert normal - set(v) == set()          # and nothing the shell reads disappeared
     js = (ROOT / "hornflow" / "viz" / "viewer" / "ui" / "app.js").read_text(
         encoding="utf-8")
     assert "if (!view || !view.view_schema) { viewerOnly(); return; }" in js
