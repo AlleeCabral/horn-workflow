@@ -69,16 +69,21 @@ class _Handler(BaseHTTPRequestHandler):
         return names
 
     def _origin_is_local(self, origin: str) -> bool:
-        parsed = urlparse(origin)
-        if parsed.scheme != "http":
-            return False
         try:
+            parsed = urlparse(origin)
+            scheme = parsed.scheme
             port = parsed.port
-        except ValueError:                  # "http://127.0.0.1:not-a-port"
+            host = (parsed.hostname or "").lower()
+        except ValueError:                  # "http://[::1" or ":not-a-port"
             return False
-        if port not in (None, int(self._bound_port())):
+        if scheme != "http":
             return False
-        return (parsed.hostname or "").lower() in self._host_names()
+        # A browser omits the default port, and the default is the scheme's:
+        # 80 for http.  It only matches when the server really is on 80.  (https
+        # is refused above, so its 443 default can never apply here.)
+        if (port if port is not None else 80) != int(self._bound_port()):
+            return False
+        return host in self._host_names()
 
     def _guard(self, *, json_body: bool) -> None:
         """Refuse foreign hosts, cross-site origins and non-JSON bodies (S3).

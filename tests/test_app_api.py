@@ -751,9 +751,15 @@ def test_a_cross_origin_post_is_refused_and_writes_nothing(server):
                                     "http://127.0.0.1:1",
                                     "https://127.0.0.1",
                                     "http://127.0.0.1:not-a-port",
+                                    "http://[::1",
+                                    "http://127.0.0.1",
                                     "null"])
 def test_a_malformed_or_foreign_origin_is_a_clean_refusal(server, origin):
-    """A garbage Origin is a refusal, never a 500 and never a write."""
+    """A garbage Origin is a refusal, never a 500 and never a write.
+
+    ``http://[::1`` cannot even be parsed, and ``http://127.0.0.1`` names the
+    default port 80 (not the bound port), so neither may pass as this app.
+    """
     base, actions = server
     if origin == "https://127.0.0.1":
         origin = "https://127.0.0.1:%d" % _port(base)
