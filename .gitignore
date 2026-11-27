@@ -52,3 +52,6 @@ scratch/
 
 # the local app state (draft brief, frozen brief, generated definitions)
 .hornflow/
+
+# --- Cline: third-party Superpowers skills (installed by tools/setup_cline_superpowers.sh)
+.cline/skills/
