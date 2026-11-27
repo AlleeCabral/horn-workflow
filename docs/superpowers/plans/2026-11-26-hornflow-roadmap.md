@@ -43,7 +43,7 @@ Phase 0 tests exercise these directly; later phases must keep them covered.
 
 | When | Skill | What it does here |
 |---|---|---|
-| Before a phase's sub-plan, when it has an open owner decision or new UX | `superpowers:brainstorming` | Settles D1 to D8 and UI shape; produces or updates the phase design section in the spec |
+| Before a phase's sub-plan, when it adds new UX or raises a new owner question | `superpowers:brainstorming` | Settles the UI shape and any new question; produces or updates the phase design section in the spec. D1 to D8 were settled on 2026-11-27 and are recorded in the spec |
 | Before code in each phase | `superpowers:writing-plans` | Expands the phase outline below into bite-sized tasks against the then-current code (Phase 0 is already expanded) |
 | Start of each phase | `superpowers:using-git-worktrees` | One worktree and branch per phase (`fix/phase0-trustworthy-core`, `feat/phase1-bench-diary`, ...) |
 | Every task | `superpowers:test-driven-development` | Failing test first; the plan names each test |
@@ -72,7 +72,7 @@ python3 -m pip install -r requirements.txt -r requirements-dev.txt
 python3 tests/test_theory.py && python3 -m pytest tests -q
 ```
 
-Expected: 147/147 legacy checks pass. pytest shows the known 34 errors in `tests/test_app_api.py` (audit T1; fixed by Phase 0 Task 15).
+Expected: 147/147 legacy checks pass. pytest shows the known 34 errors in `tests/test_app_api.py` (audit T1; fixed by Phase 0 Task 1).
 
 ---
 
@@ -86,16 +86,18 @@ Phase 0 Trustworthy core ──┬─> Phase 1 Bench + Diary + Honesty labels �
 Phase 7 Nothing to install: after Phase 1 (Stage 1 only)
 ```
 
-| Phase | Sub-plan file | Size | Owner decisions needed first |
+| Phase | Sub-plan file | Size | Owner decisions that shape it |
 |---|---|---|---|
-| 0 | `2026-11-26-phase0-trustworthy-core.md` (ready) | L (16 tasks) | D1, D2, D4 (placeholders allowed) |
-| 1 | `phase1-bench-diary-honesty.md` (to expand) | L | none |
+| 0 | `2026-11-26-phase0-trustworthy-core.md` (ready) | L (16 tasks) | D1 (Task 6), D2 (Task 15), D4 (Task 9) |
+| 1 | `phase1-bench-diary-honesty.md` (to expand) | L | D6 (Task 1.10, HORN-41) |
 | 2 | `phase2-interactive-bending.md` | L | D3, D6 |
-| 3 | `phase3-headless-bem.md` | L | D7 |
-| 4 | `phase4-build-companion-telescoping.md` | L | D5, D8 |
+| 3 | `phase3-headless-bem.md` | L | D1, D7 |
+| 4 | `phase4-build-companion-telescoping.md` | L | D5, D6, D8 |
 | 5 | `phase5-measurement-loop.md` | M | none |
 | 6 | `phase6-consolidation-docs.md` | M, rolling | none |
 | 7 | `phase7-zero-install.md` | M | none |
+
+All eight owner decisions were made on 2026-11-27; the answers are in the spec section "Decided by the owner (2026-11-27)" and in Jira HORN-31 to HORN-38. No phase waits on an undecided question.
 
 ---
 
@@ -134,6 +136,12 @@ Phase 7 Nothing to install: after Phase 1 (Stage 1 only)
 - [ ] **Task 1.9 Retire `handoff.md`.**
   - The diary has a "current state" card: latest run, open decisions, next action.
   - `handoff.md` moves to `docs/archive/`.
+- [ ] **Task 1.10 Depth budget brief (audit U6; HORN-41; decision D6).**
+  - `transport.max_depth_mm` limits the **outside** size of the finished horn: box depth when folded, total extended length when straight. The centreline length is derived from the depth, never the other way round.
+  - The brief and the validators say which of the two the limit refers to, and an error names the limit that was exceeded.
+  - Add `transport.max_collapsed_length_mm` (default `None`, meaning report only) as a separate limit, so a long straight horn is not forced to fit the depth budget when collapsed.
+  - Test: a straight horn whose extended length exceeds `max_depth_mm` fails with a message naming both numbers, and the same horn with `max_collapsed_length_mm` set behaves as the collapsed limit says.
+
 
 ## Phase 2: Interactive bending (outline)
 
@@ -153,7 +161,9 @@ Phase 7 Nothing to install: after Phase 1 (Stage 1 only)
 - [ ] **Task 2.4 Live checks.**
   - `fold/live.py`: `check_path(spec, master, limits) -> LiveReport` with fields `bbox_m`, `clearance_ok`, `self_intersection`, `bends[i].risk`, `min_radius_ok`, `panel_count` and `est_mass_kg`.
   - Fast enough for drag: 50 ms or less per call on the JBL design.
-  - Fold selection follows D3.
+  - Fold selection follows D3: lowest bend risk among the folds that fit the size limits, and compactness only breaks ties. A tie is shown as a tie, not resolved silently.
+  - Depth limits follow D6 (HORN-41): `transport.max_depth_mm` is the outside size of the finished horn, the box depth when folded, so `bbox_m` is compared with it directly. The centreline length is reported beside it, never substituted for it.
+
 - [ ] **Task 2.5 Bend endpoint.** `POST /api/bend/preview {run_id, path_spec}` returns the LiveReport plus GLB bytes (base64) of the cavity.
 - [ ] **Task 2.6 Bend editor UI.**
   - Handles on each bend in the Viewer. Angle and radius inputs. Risk colour per bend. Box outline with dimensions.
@@ -183,9 +193,15 @@ Phase 7 Nothing to install: after Phase 1 (Stage 1 only)
   - Stage A, acoustics only: RadImp1, and Mic1/LE4.
   - Stage B, coupled: LE2 |Ze|, LE1, Mic1 SPL.
   - Solve on the 24 exact frequencies. Run a mesh convergence check at lambda/6 and lambda/10.
-  - Tolerances per D1. Negative controls (`Jbl1200B_horn_19Sept26`, `Rad1_22Sept26`) must fail.
+  - Tolerances per D1, in two separate checks: the solver check (headless against AKABAK, tight, 1 to 2 dB target, the number fixed here from the convergence study) and the model check (1-D against 3-D with the same radiation condition, 3 dB is "consistent", above that is an explained difference).
+  - Negative controls (`Jbl1200B_horn_19Sept26`, `Rad1_22Sept26`) must fail.
 - [ ] **Task 3.7 Irregular-frequency probe.** A 1 Hz sweep from 100 to 130 Hz, with and without Burton-Miller, plus a power-balance check.
-- [ ] **Task 3.8 The -8.6 dB question.** Solve baffled and free-standing on the same mesh and record the result. Per D7, decide the Stage 1 reference condition and close or keep open the offset in the diary.
+- [ ] **Task 3.8 The -8.6 dB question (decision D7).**
+  - The horn stands on the ground outdoors. Solve both conditions on the same mesh: (a) a reflecting ground plane under the horn, as the reference, and (b) free-standing, as the comparison.
+  - The 1-D against 3-D model check from D1 uses (a), the ground plane.
+  - Record both results and the difference; close or keep open the -8.6 dB offset in the diary with the reason.
+  - Stage 1 keeps `half_space: true` as the approximation of ground placement, and every report states "ground placement approximated as half space". That sentence comes from the model, not from the viewer.
+
 - [ ] **Task 3.9 Generalise import.** "External solver result" import for AKABAK cross-checks, with the Phase 0 provenance rules. Delete the states that are no longer reachable (`INPUTS_GENERATED`, `MANUAL_SOLVE_COMPLETED`), with an in-memory migration.
 - [ ] **Task 3.10 Viewer.** A mouth-plane or field colour map (vertex colours in the GLB writer) and polar plots in SVG.
 
@@ -195,21 +211,35 @@ Phase 7 Nothing to install: after Phase 1 (Stage 1 only)
 - Create `hornflow/manufacturing/cutlist.py`, `hornflow/manufacturing/dxf.py`, `hornflow/manufacturing/telescoping/{segments.py, joints.py, tiles.py, report.py}` and `hornflow/viz/viewer/ui/assembly.js`.
 - Modify `hornflow/manufacturing/plywood.py`, `hornflow/manufacturing/additive.py`, `hornflow/physics/` (step model) and `hornflow/workflow/orchestrator.py`.
 
-- [ ] **Task 4.1 Plywood cut list (audit U3).**
-  - `cutlist(fold_candidate, sheet_mm=18) -> list[Panel(name, w_mm, h_mm, bevel_deg, qty)]`, using the real bend angles in place of `180/(m-1)`.
-  - CSV output, plus a DXF with R12 LINE entities (stdlib writer).
-- [ ] **Task 4.2 Exploded assembly view.** Panel order, an "explode" slider, step numbers.
-- [ ] **Task 4.3 Telescoping segmentation.**
+- [ ] **Task 4.1 Plywood cut list (audit U3). DEFERRED to HORN-40.**
+  - Owner decision D5 puts the telescoping printed horn first. This task and Task 4.2 move to the `later` issue "Plywood folded horn build output (cut list, DXF)" in the Phase 4 epic, and nothing here blocks Tasks 4.3 to 4.9.
+  - Scope recorded there: `cutlist(fold_candidate, sheet_mm=18) -> list[Panel(name, w_mm, h_mm, bevel_deg, qty)]` with the real bend angles in place of `180/(m-1)`, CSV output, and a DXF with R12 LINE entities.
+- [ ] **Task 4.2 Exploded assembly view. DEFERRED to HORN-40.** Panel order, an "explode" slider, step numbers, for the plywood design.
+- [ ] **Task 4.3 Telescoping segmentation (decisions D5, D6, D8).**
   - `segment(master, n, wall_mm, clearance_mm, overlap_mm) -> list[Segment(z0, z1, inner_profile, outer_profile)]`.
   - Constraint: for every z, segment i's outer surface, slid toward the mouth into segment i+1, stays at least `clearance_mm` inside segment i+1's inner surface.
   - Objective: minimise collapsed length (the longest segment), subject to the D8 piece mass and the bed size after tiling.
   - Straight horns only. A folded master is rejected with a clear message.
-- [ ] **Task 4.4 Joint design.** A tapered friction seal over `overlap_mm`, a gasket groove (O-ring cord size from a table), and a bayonet or over-centre latch. The pressure at each joint is taken from the 1-D model at the D2 drive level, to rank the seal requirement.
+  - Depth: per D6 (HORN-41), `transport.max_depth_mm` limits the outside size of the finished horn, which for a straight horn is the total extended length. The centreline length is derived, and the report states both.
+  - Piece mass: `transport.max_piece_mass_kg` (default 10) is a design target, overridable and not a hard limit yet. `transport.max_total_mass_kg` (default `None`) is report only. The report always states mass per piece and total mass.
+  - Printer: `manufacturing.printer_bed_mm` (default `[256, 256, 256]`) is the only source of bed size; every tiling output is recomputed from it.
+  - Material: `manufacturing.material` (`"PETG"` default, `"ASA"` alternative) sets the density used for mass and the coating steps in the build sheet.
+  - Test: a segment set that fits at 256 mm but not at 200 mm reports the difference when `printer_bed_mm` changes, and no output keeps the old bed size.
+- [ ] **Task 4.4 Joint design.** A tapered friction seal over `overlap_mm`, a gasket groove (O-ring cord size from a table), and a bayonet or over-centre latch. The pressure at each joint is taken from the 1-D model at the D2 drive level (300 W into the nominal impedance, high-passed), to rank the seal requirement.
 - [ ] **Task 4.5 Step acoustics.** Model each joint's area step as a short discontinuity in the Webster chain. Report the SPL deviation against the smooth horn, labelled `ONE_D_SIMULATION`.
-- [ ] **Task 4.6 Tiling for the printer bed.** Split each segment into tiles of 350 mm or less (per D8) with interlocking seams. Report `part_count`, the true per-part bounding box (fixes audit F13) and mass per part.
-- [ ] **Task 4.7 Stiffness.** Rib placement for large panels near the mouth, with a first-mode estimate for each panel against the passband. Panels below `f_high` are flagged.
-- [ ] **Task 4.8 Transport report and collapse animation.** Extended and collapsed dimensions, collapsed volume, mass per piece, assembly steps and time. The viewer animates collapse and extend.
-- [ ] **Task 4.9 Outdoor checklist.** Material (PETG or ASA, from D8), UV and water notes, handles, feet, and a strap anchor. All are generated into the build sheet.
+- [ ] **Task 4.6 Tiling for the printer bed (decision D8).** Split each segment into tiles that fit `manufacturing.printer_bed_mm` (default 256 mm, not 350) with interlocking seams. Report `part_count`, the true per-part bounding box (fixes audit F13), mass per part, and the bed size used.
+- [ ] **Task 4.7 Stiffness (decision D8).**
+  - The rule: every panel's first resonance must lie above `f_high` of the passband. Panels below `f_high` fail the check.
+  - Choose the lightest wall plus rib layout that meets the rule, and report the chosen wall, the rib layout and the first resonance of every panel.
+  - Report mass per piece and total mass beside it, so lightness and stiffness are read together.
+- [ ] **Task 4.8 Transport report and collapse animation (decision D8).**
+  - Extended and collapsed length, width and height, collapsed volume, centre of mass, mass per piece and total mass, so the result can be checked against the cargo bike box.
+  - Assembly steps with an estimated time per step and a total estimate. The estimate is reported, never enforced as a limit.
+  - The viewer animates collapse and extend.
+- [ ] **Task 4.9 Outdoor checklist (decision D8).**
+  - Material from `manufacturing.material`: PETG by default, with the outdoor UV-protective coating steps listed in the build sheet; ASA when the printer is enclosed, with the note that it needs no coating and is harder to print.
+  - UV and water notes, feet, carry handles and strap anchor points, all generated into the build sheet.
+
 
 ## Phase 5: Measurement loop (outline)
 
