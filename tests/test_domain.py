@@ -131,18 +131,33 @@ def test_migration_1_1_to_1_2_keeps_unknown_keys():
 
 
 # ---------------------------------------------------------------- driver lookup
-def test_a_driver_next_to_the_definition_wins_over_an_absolute_reference(tmp_path):
-    """A run snapshot carries its own driver; an absolute path must not escape it."""
+def test_a_normal_load_uses_the_absolute_driver_it_names(tmp_path):
+    """A file beside the definition must not replace the driver it names (#14)."""
+    real = ROOT / "params" / "drivers" / "jbl_1200b.yaml"
+    outside = tmp_path / "outside" / real.name
+    outside.parent.mkdir()
+    outside.write_bytes(real.read_bytes())
+    (tmp_path / real.name).write_text("driver:\n  dD: 1\n", encoding="utf-8")
+    definition = tmp_path / "definition.yaml"
+    definition.write_text(
+        EXAMPLE.read_text(encoding="utf-8").replace(
+            "driver: jbl_1200b.yaml", f"driver: {outside}"), encoding="utf-8")
+    params = config.load(definition)
+    assert params.driver is not None and params.driver.name == "jbl_1200b"
+
+
+def test_a_snapshot_load_prefers_the_driver_next_to_the_definition(tmp_path):
+    """A run snapshot carries its own driver and must not read back outside (#14)."""
     real = ROOT / "params" / "drivers" / "jbl_1200b.yaml"
     (tmp_path / real.name).write_bytes(real.read_bytes())
     outside = tmp_path / "outside" / real.name
     outside.parent.mkdir()
-    outside.write_text("driver:\n  dD: 1\n", encoding="utf-8")   # cannot validate
-    text = EXAMPLE.read_text(encoding="utf-8").replace(
-        "driver: jbl_1200b.yaml", f"driver: {outside}")
+    outside.write_text("driver:\n  dD: 1\n", encoding="utf-8")
     definition = tmp_path / "definition.yaml"
-    definition.write_text(text, encoding="utf-8")
-    params = config.load(definition)
+    definition.write_text(
+        EXAMPLE.read_text(encoding="utf-8").replace(
+            "driver: jbl_1200b.yaml", f"driver: {outside}"), encoding="utf-8")
+    params = config.load(definition, snapshot=True)
     assert params.driver is not None and params.driver.name == "jbl_1200b"
 
 

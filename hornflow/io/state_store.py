@@ -61,6 +61,19 @@ def run_input_path(run_dir: str | Path, state: DesignState) -> Path:
     return Path(original)
 
 
+def run_params(run_dir: str | Path, state: DesignState):
+    """The design parameters a run was built from, read from its own snapshot.
+
+    Loading a snapshot is not the same as loading a definition: a driver next to
+    it wins over an absolute reference, so a copied run cannot read a driver
+    from outside itself.  A 1.1 run has no snapshot and keeps the plain rule.
+    """
+    from .. import config                    # local: io stays importable alone
+
+    inputs = (state.run or {}).get("inputs") or {}
+    return config.load(run_input_path(run_dir, state), snapshot=bool(inputs))
+
+
 def update_state(path: str | Path, fn: Callable[[DesignState], T]) -> T:
     """Load, apply ``fn``, save and return whatever ``fn`` returned.
 

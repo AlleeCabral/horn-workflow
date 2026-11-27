@@ -20,7 +20,7 @@ from ..domain.state import DesignState, SCHEMA_VERSION
 from ..domain.limits import Constraint, InputStatus
 from ..io.artifacts import ArtifactStore, new_run_id, sha256_file, atomic_write
 from ..io.logs import StageLogger
-from ..io.state_store import run_input_path, save_state
+from ..io.state_store import run_input_path, run_params, save_state
 from ..manufacturing.additive import AdditiveTransformer
 from ..manufacturing.plywood import PlywoodTransformer
 from ..manufacturing import exporters
@@ -133,7 +133,17 @@ class Pipeline:
 
     # ------------------------------------------------------------------ 1
     def stage_input_audit(self):
-        self.params = config.load(self.param_path)
+        # Snapshot first, then read the run's own bytes: a file edited between
+        # the copy and the read could otherwise make the run mean something
+        # other than what it recorded (review of #14).
+        self.state.run.update({
+            "run_id": self.run_id,
+            "input_path": str(Path(self.param_path).resolve()),
+            "python": __import__("platform").python_version(),
+            "git_commit": None,
+            "inputs": self._snapshot_inputs(),
+        })
+        self.params = run_params(self.run_dir, self.state)
         p = self.params
         _, self.master = build_master(p, "folded_horn")
         self.feasibility = FeasibilityEvaluator().evaluate(p, self.master)
@@ -164,13 +174,6 @@ class Pipeline:
                        InputStatus.PREFERRED.value),
             Constraint("Xmax_mm", (p.driver.Xmax or 0) * 1e3, "mm", InputStatus.FIXED.value),
         ]
-        self.state.run.update({
-            "run_id": self.run_id,
-            "input_path": str(Path(self.param_path).resolve()),
-            "python": __import__("platform").python_version(),
-            "git_commit": None,
-            "inputs": self._snapshot_inputs(),
-        })
         return "passed"
 
     def _snapshot_inputs(self) -> dict:
@@ -194,12 +197,28 @@ class Pipeline:
             "limits": dict(self.limits),
             "code_version": code_version(),
         }
-        driver = config.driver_path(source)
-        if driver is not None:
-            # keep the name the definition uses, so it resolves inside the snapshot
-            copied = dest / driver.name
+        reference = config.driver_reference(source)
+        if reference is not None:
+            written = Path(reference)
+            if written.is_absolute():
+                written = Path(written.name)
+            if ".." in written.parts:
+                raise ValueError(
+                    f"the driver reference {reference!r} leaves the definition's "
+                    "folder, so it cannot be snapshotted into the run")
+            copied = dest / written
+            if copied == definition:
+                raise ValueError(
+                    "the driver file is named definition.yaml, which is where the "
+                    "definition snapshot goes; rename the driver file")
+            driver = config.driver_path(source)
+            if driver is None or not driver.is_file():
+                raise FileNotFoundError(
+                    f"the driver file {reference!r} referenced by {source.name} "
+                    "was not found")
+            # keep the reference as written, so it resolves inside the snapshot
             atomic_write(copied, driver.read_bytes())
-            inputs["driver"] = f"inputs/{copied.name}"
+            inputs["driver"] = copied.relative_to(self.run_dir).as_posix()
             inputs["driver_sha256"] = sha256_file(copied)
         return inputs
 
@@ -369,7 +388,9 @@ class Pipeline:
     # ------------------------------------------------------------------ 13
     def stage_sensitivity(self):
         # read the run's own snapshot, not the file it was started from (S7)
-        self.sensitivity = run_sensitivity(run_input_path(self.run_dir, self.state))
+        snapshot = bool((self.state.run or {}).get("inputs"))
+        self.sensitivity = run_sensitivity(run_input_path(self.run_dir, self.state),
+                                           snapshot=snapshot)
         self.state.sensitivity_runs = self.sensitivity
         return "passed"
 

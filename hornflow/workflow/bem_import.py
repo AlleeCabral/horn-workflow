@@ -15,10 +15,9 @@ from pathlib import Path
 import numpy as np
 
 from .. import bem as _bem
-from .. import config
 from ..domain.evidence import now_utc
 from ..io.artifacts import atomic_write, sha256_file
-from ..io.state_store import load_state_file, run_input_path, update_state
+from ..io.state_store import load_state_file, run_params, update_state
 from ..physics.solvers import bem_manual
 from ..physics.solvers import manual as manual_mod
 
@@ -180,7 +179,7 @@ def import_into_run(run_dir, folder, *, tolerance_db: float | None = None,
 
     # The definition this run was started from, from the run's own snapshot
     # (audit S7): editing the file it was created from cannot change the import.
-    params = config.load(run_input_path(run_dir, state))
+    params = run_params(run_dir, state)
     bem_dir = run_dir / "deliverables" / out_subdir
     manifest = manual_mod.read_manifest(bem_dir / manual_mod.MANIFEST_NAME,
                                         base=run_dir)
