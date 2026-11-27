@@ -46,13 +46,18 @@ class ManualSolveState(str, Enum):
     BEM_COMPARISON_COMPLETED = "BEM_COMPARISON_COMPLETED"
     BEM_VALIDATED = "BEM_VALIDATED"
     BEM_REJECTED = "BEM_REJECTED"
+    # Decision D1 (Phase 0 Task 6): the comparison matched only because a
+    # tolerance above the default was granted.  The acceptance is real and
+    # honest, but it is never reported as BEM_VALIDATED.
+    BEM_ACCEPTED_WITH_TOLERANCE = "BEM_ACCEPTED_WITH_TOLERANCE"
 
 
 # Allowed forward transitions.  A *new* import of a *fresh* export supersedes an
-# earlier decision, so the two decided states may return to VIPS_IMPORTED; the
+# earlier decision, so the three decided states may return to VIPS_IMPORTED; the
 # previous decision itself is never erased (it stays in the decision log).
 REIMPORT_FROM = (ManualSolveState.BEM_VALIDATED.value,
-                 ManualSolveState.BEM_REJECTED.value)
+                 ManualSolveState.BEM_REJECTED.value,
+                 ManualSolveState.BEM_ACCEPTED_WITH_TOLERANCE.value)
 
 ALLOWED_TRANSITIONS: dict[str, tuple[str, ...]] = {
     ManualSolveState.INPUTS_GENERATED.value: (ManualSolveState.GUI_REQUIRED.value,),
@@ -60,10 +65,13 @@ ALLOWED_TRANSITIONS: dict[str, tuple[str, ...]] = {
     ManualSolveState.MANUAL_SOLVE_PENDING.value: (ManualSolveState.MANUAL_SOLVE_COMPLETED.value,),
     ManualSolveState.MANUAL_SOLVE_COMPLETED.value: (ManualSolveState.VIPS_IMPORTED.value,),
     ManualSolveState.VIPS_IMPORTED.value: (ManualSolveState.BEM_COMPARISON_COMPLETED.value,),
-    ManualSolveState.BEM_COMPARISON_COMPLETED.value: (ManualSolveState.BEM_VALIDATED.value,
-                                                     ManualSolveState.BEM_REJECTED.value),
+    ManualSolveState.BEM_COMPARISON_COMPLETED.value: (
+        ManualSolveState.BEM_VALIDATED.value,
+        ManualSolveState.BEM_REJECTED.value,
+        ManualSolveState.BEM_ACCEPTED_WITH_TOLERANCE.value),
     ManualSolveState.BEM_VALIDATED.value: (ManualSolveState.VIPS_IMPORTED.value,),
     ManualSolveState.BEM_REJECTED.value: (ManualSolveState.VIPS_IMPORTED.value,),
+    ManualSolveState.BEM_ACCEPTED_WITH_TOLERANCE.value: (ManualSolveState.VIPS_IMPORTED.value,),
 }
 
 # The order the pipeline walks through; useful for reporting.
@@ -94,7 +102,8 @@ def advance(current: str, target: str) -> str:
 def is_complete(state: str) -> bool:
     """A candidate whose BEM is decided one way or the other."""
     return str(state) in (ManualSolveState.BEM_VALIDATED.value,
-                          ManualSolveState.BEM_REJECTED.value)
+                          ManualSolveState.BEM_REJECTED.value,
+                          ManualSolveState.BEM_ACCEPTED_WITH_TOLERANCE.value)
 
 
 def is_validated(state: str) -> bool:
@@ -122,20 +131,30 @@ class RunManifest:
     files: dict = field(default_factory=dict)      # name -> {path, sha256, bytes}
     notes: str = ""
     schema_version: str = MANIFEST_SCHEMA
+    # Provenance (Phase 0 Task 6, audit B4): the AKABAK Graph_Group this run
+    # belongs to.  None until the first accepted import records it.
+    expected_graph_group: str | None = None
+    # The tolerance this run was set up with (Phase 0 Task 6, decision D1).
+    # Mirrors bem_manual.DEFAULT_TOLERANCE_DB; None means "use the default".
+    tolerance_db: float | None = None
 
     def to_dict(self) -> dict:
         return asdict(self)
 
     @classmethod
     def from_dict(cls, d: dict) -> "RunManifest":
-        known = {f: d.get(f) for f in cls.__dataclass_fields__}  # type: ignore[attr-defined]
-        return cls(**known)                                       # type: ignore[arg-type]
+        # Only fields the file actually carries: an older manifest keeps the
+        # dataclass defaults instead of turning them into None.
+        known = {f: d[f] for f in cls.__dataclass_fields__ if f in d}  # type: ignore[attr-defined]
+        return cls(**known)                                            # type: ignore[arg-type]
 
 
 def build_manifest(*, run_id: str, project: str, input_path, solver: str,
                    solver_version: str, fidelity: str, bem_dir, export_dir,
                    files: dict | None = None, expected_exports: list | None = None,
-                   notes: str = "", generated_utc: str | None = None) -> RunManifest:
+                   notes: str = "", generated_utc: str | None = None,
+                   expected_graph_group: str | None = None,
+                   tolerance_db: float | None = None) -> RunManifest:
     """Collect and fingerprint the inputs HornFlow generated for the manual solve."""
     rec: dict = {}
     for name, path in (files or {}).items():
@@ -150,7 +169,8 @@ def build_manifest(*, run_id: str, project: str, input_path, solver: str,
         solver=solver, solver_version=solver_version, fidelity=fidelity,
         bem_dir=str(bem_dir), export_dir=str(export_dir),
         expected_exports=list(expected_exports or ["*.vips"]),
-        files=rec, notes=notes)
+        files=rec, notes=notes, expected_graph_group=expected_graph_group,
+        tolerance_db=tolerance_db)
 
 
 def write_manifest(manifest: RunManifest, path) -> Path:

@@ -9,14 +9,17 @@ from __future__ import annotations
 
 import json
 import math
+import shutil
 import sys
 from pathlib import Path
 
 import numpy as np
+import pytest
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 
+from conftest import ApiError, copy_exports, load_state_file                       # noqa: E402
 from hornflow import bem                                                          # noqa: E402
 from hornflow.physics.solvers import bem_manual, manual                            # noqa: E402
 from hornflow.workflow import bem_import, run_pipeline                             # noqa: E402
@@ -31,12 +34,21 @@ REAL_EXPORT = ROOT / "tests" / "fixtures" / "bem_export"
 #  fixtures / helpers
 # --------------------------------------------------------------------------- #
 def vips_text(rows, *, unit="Pa", label="Mic1; x=0, y=0, z=2.499 m  (All)",
-              level="SoundPressure", complex_fmt=True, coord_type=None, angles=None):
-    """Build a synthetic .vips file body in the real AKABAK format (CRLF)."""
+              level="SoundPressure", complex_fmt=True, coord_type=None, angles=None,
+              stamp="1/1/2030 12:00:00 PM", caption=None,
+              group="AKABAK-test_1 $$$ID0$$$"):
+    """Build a synthetic .vips file body in the real AKABAK format (CRLF).
+
+    A real export carries a header timestamp, a ``Graph_Caption`` and a
+    ``Graph_Group``; so does this one, because the importer now reads all three
+    for the staleness and provenance checks (Phase 0 Task 6, audit B4, B5).
+    """
+    legend_name = str(label).split(";")[0].strip()
+    caption = caption or f"Mic Curve (point) - {legend_name}"
     head = [
         "// ************************************************************",
         "//",
-        "// Akabak-Demo   Spectrum Data  1/1/2030 12:00:00 PM",
+        f"// Akabak-Demo   Spectrum Data  {stamp}",
         "//",
         "// ************************************************************",
         "",
@@ -56,6 +68,8 @@ def vips_text(rows, *, unit="Pa", label="Mic1; x=0, y=0, z=2.499 m  (All)",
         f"Data_BaseUnit={unit}",
         "Data_IsContPhase=false",
         f'Data_Legend="{label}"',
+        f'Graph_Caption="{caption}"',
+        f'Graph_Group="{group}"',
     ]
     if coord_type:
         head.append(f"Param_Coord_Type={coord_type}")
@@ -113,7 +127,13 @@ def test_state_machine_is_legal_and_terminal():
     assert manual.ALLOWED_TRANSITIONS[s.BEM_REJECTED.value] == ("VIPS_IMPORTED",)
     assert manual.ALLOWED_TRANSITIONS[s.MANUAL_SOLVE_PENDING.value] == ("MANUAL_SOLVE_COMPLETED",)
     assert manual.is_complete(s.BEM_REJECTED.value) and manual.is_validated(s.BEM_VALIDATED.value)
-    assert manual.REIMPORT_FROM == ("BEM_VALIDATED", "BEM_REJECTED")
+    # a relaxed tolerance decides, but is never "validated" (decision D1)
+    assert manual.can_advance(s.BEM_COMPARISON_COMPLETED.value,
+                              s.BEM_ACCEPTED_WITH_TOLERANCE.value)
+    assert manual.is_complete(s.BEM_ACCEPTED_WITH_TOLERANCE.value)
+    assert not manual.is_validated(s.BEM_ACCEPTED_WITH_TOLERANCE.value)
+    assert manual.REIMPORT_FROM == ("BEM_VALIDATED", "BEM_REJECTED",
+                                    "BEM_ACCEPTED_WITH_TOLERANCE")
 
 
 def test_reimport_edge_is_reachable():
@@ -294,30 +314,35 @@ def test_validate_rejects_a_stale_export(tmp_path):
     import os
     import time
     m, export = _manifest_for(tmp_path)
+    # stale in both places: the .vips header AKABAK wrote, and the file's mtime
     p = write_export(export, "Akabak-p-Mic1.vips",
-                     vips_text(spl_rows([60, 100, 200], [90, 90, 90])))
+                     vips_text(spl_rows([60, 100, 200], [90, 90, 90]),
+                               stamp="1/1/2020 12:00:00 PM"))
     old = time.time() - 10 * 24 * 3600          # ten days before the manifest
     os.utime(p, (old, old))
     v = bem_manual.validate_exports(export, m)
     assert "export_timestamp_after_inputs" in v.hard_failures()
 
 
-def test_validate_soft_warns_without_a_manifest(tmp_path):
+def test_validate_refuses_without_a_manifest(tmp_path):
+    # provenance is hard now (audit B4): no manifest means no evidence of origin
     export = tmp_path / "export"
     write_export(export, "x.vips", vips_text(spl_rows([60, 100, 200], [90, 90, 90])))
     v = bem_manual.validate_exports(export, None)
-    assert v.passed, v.hard_failures()
-    assert any("belongs_to_run" in w for w in v.warnings)
-    assert any("run_manifest_matches" in w for w in v.warnings)
+    assert not v.passed
+    assert {"belongs_to_run", "run_manifest_matches"} <= set(v.hard_failures())
 
 
-def test_validate_records_unparsed_files(tmp_path):
+def test_validate_refuses_a_file_it_cannot_parse(tmp_path):
+    """Review of #12: every file read must be parsed and checked, so junk fails."""
     m, export = _manifest_for(tmp_path)
     (export / "junk.txt").write_text("nothing numeric here\n", encoding="utf-8")
     write_export(export, "Akabak-p-Mic1.vips",
                  vips_text(spl_rows([60, 100, 200], [90, 90, 90])))
     v = bem_manual.validate_exports(export, m)
-    assert v.passed and any("junk.txt" in e for e in v.errors)
+    assert not v.passed
+    assert "every_file_parsed" in v.hard_failures()
+    assert any("junk.txt" in e for e in v.errors)
 
 
 
@@ -476,6 +501,126 @@ def test_cli_bem_import_prints_the_check_table(tmp_path, capsys):
     from hornflow.cli import main
     rc = main([str(EXAMPLE), "--out", str(tmp_path), "--quiet"])
     assert rc == 0
+
+
+# --------------------------------------------------------------------------- #
+#  bounded tolerance and hard provenance (audit B1, B4, B5; decision D1)
+# --------------------------------------------------------------------------- #
+@pytest.mark.parametrize("tol", [0, -1, 1e9, float("inf"), float("nan")])
+def test_tolerance_out_of_range_is_refused(project, tol):
+    from conftest import _actions
+    a = _actions(project)
+    copy_exports(a.run_dir)
+    with pytest.raises(ApiError) as e:
+        a.import_vips(run_id=a.run_dir.name, tolerance_db=tol)
+    assert e.value.code == "tolerance_out_of_range"
+
+
+def test_relaxed_tolerance_never_validates(run_copy):
+    exp = copy_exports(run_copy)                        # a good Rad1 export set
+    res = bem_import.import_into_run(run_copy, exp, tolerance_db=12.0)
+    assert res["state"] == "BEM_ACCEPTED_WITH_TOLERANCE"
+    assert res["validation"]["relaxed_tolerance"] is True
+
+
+def test_mixed_projects_fail_provenance(run_copy):
+    exp = copy_exports(run_copy, "Akabak-*")            # Rad1 and Jbl1200B together
+    res = bem_import.import_into_run(run_copy, exp, tolerance_db=12.0)
+    names = {c["name"]: c for c in res["validation"]["checks"]}
+    assert names["belongs_to_run"]["passed"] is False
+    assert names["belongs_to_run"]["severity"] == "hard"
+    assert res["state"] != "BEM_VALIDATED"
+
+
+def test_le_only_export_has_no_on_axis_curve(run_copy):
+    exp = copy_exports(run_copy, "Akabak-Rad1_22Sept26-LE*")
+    res = bem_import.import_into_run(run_copy, exp, tolerance_db=20.0)
+    assert res["validation"]["passed"] is False
+
+
+def test_cli_import_outside_run_dir_does_not_start_a_run(tmp_path, capsys):
+    from hornflow.cli import main
+    rc = main([str(EXAMPLE), "--out", str(tmp_path / "runs"),
+               "--bem-import", str(REAL_EXPORT)])
+    err = capsys.readouterr().err
+    assert rc == 2
+    assert not (tmp_path / "runs").exists()
+    assert "not inside a run" in err
+
+
+def test_a_duplicate_basename_in_a_subfolder_is_checked(run_copy):
+    """Review of #12: parsed keyed by base name hid a foreign copy in a subfolder."""
+    exp = copy_exports(run_copy)
+    old = exp / "0old"
+    old.mkdir()
+    shutil.copy2(REAL_EXPORT / "Akabak-Jbl1200B_horn_19Sept26-Mic1.vips",
+                 old / "Akabak-Rad1_23Sept26-Mic1.vips")
+    res = bem_import.import_into_run(run_copy, exp, tolerance_db=12.0)
+    names = {c["name"]: c for c in res["validation"]["checks"]}
+    assert names["belongs_to_run"]["passed"] is False
+    assert res["validation"]["passed"] is False
+
+
+def test_an_unparseable_file_in_the_export_is_refused(run_copy):
+    """Review of #12: every file the validator reads must be parsed and checked."""
+    exp = copy_exports(run_copy)
+    (exp / "notes.txt").write_text("no numbers here\n", encoding="utf-8")
+    res = bem_import.import_into_run(run_copy, exp, tolerance_db=12.0)
+    assert res["validation"]["passed"] is False
+    names = {c["name"]: c for c in res["validation"]["checks"]}
+    assert names["every_file_parsed"]["passed"] is False
+
+
+def test_header_time_is_read_as_local_time(monkeypatch):
+    """Review of #12: AKABAK writes local time, not UTC."""
+    import time
+    if not hasattr(time, "tzset"):
+        pytest.skip("tzset is not available on this platform")
+    monkeypatch.setenv("TZ", "America/New_York")
+    time.tzset()
+    try:
+        stamp = bem.vips_header_time(
+            "// Akabak-Demo   Spectrum Data  6/1/2026 12:00:00 PM")
+    finally:
+        monkeypatch.delenv("TZ", raising=False)
+        time.tzset()
+    # 12:00 in New York in June is 16:00 UTC
+    assert stamp is not None and stamp.startswith("2026-06-01T16:00")
+
+
+def test_a_rejected_first_import_does_not_pin_the_group(run_copy):
+    """Review of #12: a rejected comparison proves nothing about acceptance."""
+    exp = copy_exports(run_copy)
+    res = bem_import.import_into_run(run_copy, exp, tolerance_db=1.0)
+    assert res["state"] == "BEM_REJECTED"
+    man = manual.read_manifest(run_copy / "deliverables" / "bem" / manual.MANIFEST_NAME)
+    assert man.expected_graph_group is None
+
+
+def test_the_first_accepted_import_pins_the_group_in_this_run(run_copy):
+    bem_import.import_into_run(run_copy, copy_exports(run_copy), tolerance_db=12.0)
+    man = manual.read_manifest(run_copy / "deliverables" / "bem" / manual.MANIFEST_NAME)
+    assert man.expected_graph_group == "AKABAK-Rad1_23Sept26 $$$ID9075238390$$$"
+
+
+def test_a_copy_import_pins_only_the_copy(run_copy, pipeline_run):
+    """Review of #12: the pin must go to the run being imported, not the source."""
+    session = pipeline_run / "deliverables" / "bem" / manual.MANIFEST_NAME
+    before = session.read_bytes()
+    bem_import.import_into_run(run_copy, copy_exports(run_copy), tolerance_db=12.0)
+    assert session.read_bytes() == before
+    copy_man = manual.read_manifest(run_copy / "deliverables" / "bem" / manual.MANIFEST_NAME)
+    assert copy_man.expected_graph_group == "AKABAK-Rad1_23Sept26 $$$ID9075238390$$$"
+
+
+def test_cli_bad_tolerance_is_one_error_line(run_copy, capsys):
+    """Review of #12: an out-of-range tolerance is a CLI error, not a traceback."""
+    from hornflow.cli import main
+    export = copy_exports(run_copy)
+    rc = main([str(EXAMPLE), "--bem-import", str(export), "--bem-tolerance-db", "0"])
+    err = capsys.readouterr().err.strip().splitlines()
+    assert rc == 2
+    assert err and err[0].startswith("error:")
 
 
 # --------------------------------------------------------------------------- #

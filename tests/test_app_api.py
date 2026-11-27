@@ -42,7 +42,7 @@ ANSWERS = {
 }
 
 
-from conftest import _actions, load_state_file, update_state  # noqa: E402
+from conftest import _actions, copy_exports, load_state_file, update_state  # noqa: E402
 
 
 def _store(project):
@@ -451,6 +451,20 @@ def test_a_mutating_call_with_a_missing_run_id_is_refused(project, call):
         "accepted_unvalidated")
 
 
+def test_accepted_with_tolerance_is_its_own_state(project):
+    """Review of #12, decision D1: a relaxed acceptance never reads as validated."""
+    a = _actions(project)
+    copy_exports(a.run_dir)
+    out = a.import_vips(run_id=a.run_dir.name, tolerance_db=12.0)
+    assert out["state"] == "BEM_ACCEPTED_WITH_TOLERANCE"
+    stored = load_state_file(a.run_dir / "state.json").validation
+    assert stored["bem_status"] == "accepted_with_tolerance"
+    v = a.view()
+    assert v["current_state"]["bem_state"] == "BEM_ACCEPTED_WITH_TOLERANCE"
+    assert v["outcome"]["bem"] == "BEM_ACCEPTED_WITH_TOLERANCE"
+    assert v["mode"] == "review"
+
+
 def test_corrupt_state_is_reported_not_treated_as_a_first_run(project):
     a = _actions(project)
     normal = set(a.view())
@@ -466,6 +480,7 @@ def test_corrupt_state_is_reported_not_treated_as_a_first_run(project):
     assert v["view_schema"] == VIEW_SCHEMA
     # Nothing the shell reads may be missing; "error" is the only addition.
     assert set(v) - normal == {"error"}
+    assert normal - set(v) == set()          # and nothing the shell reads disappeared
     js = (ROOT / "hornflow" / "viz" / "viewer" / "ui" / "app.js").read_text(
         encoding="utf-8")
     assert "if (!view || !view.view_schema) { viewerOnly(); return; }" in js

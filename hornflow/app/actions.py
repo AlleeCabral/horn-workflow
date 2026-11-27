@@ -361,11 +361,22 @@ class AppActions:
         }
 
     # --------------------------------------------------------------- import
-    def import_vips(self, *, run_id, subdir=None, tolerance_db=6.0) -> dict:
-        """Validate + compare a ``.vips`` export.  The folder is never a path."""
+    def import_vips(self, *, run_id, subdir=None, tolerance_db=None) -> dict:
+        """Validate + compare a ``.vips`` export.  The folder is never a path.
+
+        ``tolerance_db=None`` means the manifest's tolerance, then the default;
+        anything outside ``bem_manual.TOLERANCE_RANGE_DB`` is refused here, so a
+        typo never reaches the comparison (decision D1).
+        """
         run_dir = self._require_run(run_id)
+        from ..physics.solvers import bem_manual
         from ..workflow import bem_import
 
+        if tolerance_db is not None:
+            try:
+                tolerance_db = bem_manual.check_tolerance(tolerance_db)
+            except (TypeError, ValueError) as exc:
+                raise ApiError("tolerance_out_of_range", str(exc), status=400) from None
         bem_dir = run_dir / "deliverables" / "bem"
         folder = safe_under(bem_dir, subdir or "export")
         if not folder.is_dir():
@@ -374,13 +385,12 @@ class AppActions:
                 "the export folder does not exist yet - do the GUI solve, export "
                 "the .vips spectra into deliverables/bem/export, then import",
                 status=409)
-        result = bem_import.import_into_run(run_dir, folder,
-                                           tolerance_db=float(tolerance_db))
+        result = bem_import.import_into_run(run_dir, folder, tolerance_db=tolerance_db)
         return {"ok": bool((result.get("validation") or {}).get("passed")),
                 "state": result.get("state"),
                 "validation": result.get("validation"),
                 "report": result.get("report"),
-                "tolerance_db": float(tolerance_db),
+                "tolerance_db": (result.get("validation") or {}).get("tolerance_db"),
                 "view": self.view()}
 
     # ------------------------------------------------------------- decision

@@ -443,9 +443,16 @@
       imp.addEventListener('click', function () {
         post('/api/import', { run_id: currentRunId() }).then(function (out) {
           applyView(out.view);
-          note(out.ok ? 'Imported and compared: BEM_VALIDATED'
-                      : 'Imported: BEM_REJECTED - the difference is over tolerance',
-               out.ok ? 'ok' : 'warn');
+          var st = out.state || 'no state';
+          var msg = (st === 'BEM_VALIDATED')
+            ? 'Imported and compared: BEM_VALIDATED'
+            : (st === 'BEM_ACCEPTED_WITH_TOLERANCE')
+              ? 'Imported: accepted with a relaxed tolerance (not validated)'
+              : (st === 'BEM_REJECTED')
+                ? 'Imported: BEM_REJECTED - the difference is over tolerance'
+                : 'Imported: ' + st;
+          note(msg, (st === 'BEM_VALIDATED') ? 'ok'
+                    : (st === 'MANUAL_SOLVE_PENDING' ? 'bad' : 'warn'));
         }).catch(function (e) { note('Import failed: ' + e.message, 'bad'); });
       });
       btns.appendChild(imp);

@@ -549,9 +549,14 @@ def test_view_model_survives_a_full_import_cycle(tmp_path):
     export.mkdir(parents=True, exist_ok=True)
     rows = [(f, 20e-6 * 1.4142135623730951 * 10 ** ((v + 1.0) / 20.0), 0.0)
             for f, v in zip(freqs, spls)]
-    lines = ["SourceDesc=VACS_Data_Text", "Data_Format=Complex",
+    # a faithful AKABAK export: header timestamp, a Graph_Caption naming the Mic,
+    # and the Graph_Group the run's provenance is now checked against (audit B4)
+    lines = ["// Akabak-Demo   Spectrum Data  1/1/2030 12:00:00 PM",
+             "SourceDesc=VACS_Data_Text", "Data_Format=Complex",
              "Data_LevelType=SoundPressure", "Data_AbscUnit=Hz", "Data_BaseUnit=Pa",
-             'Data_Legend="Mic1; x=0"', "Data"]
+             'Data_Legend="Mic1; x=0"',
+             'Graph_Caption="Mic Curve (point) - Mic1"',
+             'Graph_Group="AKABAK-t $$$ID1$$$"', "Data"]
     lines += [" ".join(f"{x:.10g}" for x in r) for r in rows]
     lines += ["Data_End", ""]
     (export / "Akabak-t-Mic1.vips").write_bytes(

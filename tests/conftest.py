@@ -39,7 +39,7 @@ BEM_FIXTURES = ROOT / "tests" / "fixtures" / "bem_export"
 BEM_MANIFEST = Path("deliverables") / "bem" / "bem_manifest.json"
 
 __all__ = ["ACCEPT_REASONS", "ApiError", "AppActions", "copy_exports",
-           "load_state_file", "project", "pipeline_run", "update_state"]
+           "load_state_file", "project", "pipeline_run", "run_copy", "update_state"]
 
 
 @contextmanager
@@ -77,6 +77,18 @@ def project(tmp_path, pipeline_run) -> tuple[Path, str]:
     run_id = pipeline_run.name
     shutil.copytree(pipeline_run, proj / "runs" / run_id)
     return proj, run_id
+
+
+@pytest.fixture
+def run_copy(pipeline_run, tmp_path) -> Path:
+    """A private copy of the session run, for tests that write into it.
+
+    ``pipeline_run`` is session-scoped: the app tests assert on its untouched
+    hand-over state, so any test that imports a BEM result works on a copy.
+    """
+    dst = tmp_path / "run"
+    shutil.copytree(pipeline_run, dst)
+    return dst
 
 
 def _actions(project, *, runner=None, run_dir=None) -> AppActions:

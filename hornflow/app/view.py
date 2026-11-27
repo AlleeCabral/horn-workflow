@@ -33,10 +33,10 @@ VIEW_SCHEMA = "1.2"
 BEM_STATES = (
     "INPUTS_GENERATED", "GUI_REQUIRED", "MANUAL_SOLVE_PENDING",
     "MANUAL_SOLVE_COMPLETED", "VIPS_IMPORTED", "BEM_COMPARISON_COMPLETED",
-    "BEM_VALIDATED", "BEM_REJECTED",
+    "BEM_VALIDATED", "BEM_REJECTED", "BEM_ACCEPTED_WITH_TOLERANCE",
 )
 BEM_OPEN = ("GUI_REQUIRED", "MANUAL_SOLVE_PENDING", "MANUAL_SOLVE_COMPLETED")
-BEM_DECIDED = ("BEM_VALIDATED", "BEM_REJECTED")
+BEM_DECIDED = ("BEM_VALIDATED", "BEM_REJECTED", "BEM_ACCEPTED_WITH_TOLERANCE")
 
 # ---------------------------------------------------------------------------
 #  the five required first-run questions (docs/app-local-multitab.md §8)
@@ -703,7 +703,7 @@ def _outcome(bem: dict, state: dict, findings: list) -> dict:
     bem_state = bem.get("state") or "INPUTS_GENERATED"
     if bem_state in BEM_OPEN or bem_state in ("INPUTS_GENERATED", "VIPS_IMPORTED"):
         exit_name = None
-    elif bem_state == "BEM_VALIDATED":
+    elif bem_state in ("BEM_VALIDATED", "BEM_ACCEPTED_WITH_TOLERANCE"):
         exit_name = "record_decision"
     else:
         exit_name = "re_export_or_relax_tolerance"
@@ -841,7 +841,8 @@ def _next_action(mode: str, gates: list, questions: list, bem_state: str,
                    f"{metrics.get('worst_diff_db', 0):.2f} dB vs "
                    f"{outcome.get('tolerance_db')} dB tolerance.")
         return act("act.bem.retry", "Re-export and retry", why, "Builder")
-    if bem_state == "BEM_VALIDATED" and not outcome.get("decided"):
+    if bem_state in ("BEM_VALIDATED", "BEM_ACCEPTED_WITH_TOLERANCE") \
+            and not outcome.get("decided"):
         return act("act.decide", "Mark decided",
                    "Validated against the 1-D reference.", "Owner")
     return act("act.report", "Open the report",
