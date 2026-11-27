@@ -28,6 +28,8 @@ import sys
 import time
 from pathlib import Path
 
+import yaml
+
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 from hornflow import __version__, advise, config, plots, report, response, sweep   # noqa: E402
@@ -233,6 +235,11 @@ def main(argv: list | None = None) -> int:
 
     try:
         params = config.load(args.definition)
+    except (config.ConfigError, yaml.YAMLError) as exc:
+        # the same two-line form the pipeline CLI uses (audit P12, U7)
+        for line in config.error_lines(exc):
+            print(line, file=sys.stderr)
+        return 2
     except (FileNotFoundError, KeyError, ValueError) as exc:
         print(f"error: {exc}", file=sys.stderr)
         return 2

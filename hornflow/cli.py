@@ -14,6 +14,9 @@ from __future__ import annotations
 import argparse
 import sys
 
+import yaml
+
+from .config_schema import ConfigError, error_lines
 from .workflow import run_pipeline
 
 
@@ -127,8 +130,14 @@ def main(argv=None) -> int:
         print(f"  report: {res['report']}")
         return 0 if v["passed"] else 1
 
-    summary = run_pipeline(args.definition, out_root=args.out, limits=limits,
-                           progress=progress)
+    try:
+        summary = run_pipeline(args.definition, out_root=args.out, limits=limits,
+                               progress=progress)
+    except (ConfigError, yaml.YAMLError, FileNotFoundError) as exc:
+        # one line per problem, exit 2, and no run directory (audit P12)
+        for line in error_lines(exc):
+            print(line, file=sys.stderr)
+        return 2
 
     print("")
     print(f"run:        {summary['run_id']}")
@@ -137,11 +146,14 @@ def main(argv=None) -> int:
     print(f"folds:      {summary['n_fold_candidates']} candidates")
     print(f"report:     {summary['report']}")
     print(f"viewer:     {summary['viewer']}")
+    if not args.quiet:
+        for name, info in summary["stages"].items():
+            print(f"{str(info.get('status', '?')):<8} {name}")
     failed = [k for k, v in summary["stages"].items()
               if v.get("status") in ("failed", "blocked")]
     if failed:
         print(f"stages not passed: {', '.join(failed)}")
-    return 0
+    return 1 if failed else 0
 
 
 if __name__ == "__main__":

@@ -133,6 +133,9 @@ def _candidate_overrides(cand: Candidate, aspect: float) -> dict:
         "horn.mouth_radius": "auto",
         "horn.mouth_shape": "rectangular",
         "horn.mouth_aspect": aspect,
+        # The advice relations are exponential-only, so the simulated candidate
+        # must be exponential too (audit P10).
+        "horn.profile": "exponential",
     }
 
 
@@ -330,8 +333,10 @@ def _report_part2(data: dict, path: Path, md: list, base, drv, ref, best,
                   files: list | None = None) -> Path:
     """Second half of the advice report: gain table, ranking, derivation, limits."""
     if best and best.result is not None:
+        v_drive = float(data["base"].simulation.voltage)
         md += ["", f"## What the horn buys you ({best.label})", "",
-               f"Same driver, same {drv.rear_volume * 1e6:.0f} cm^3 rear chamber, 2.83 V, 1 m, "
+               f"Same driver, same {drv.rear_volume * 1e6:.0f} cm^3 rear chamber, "
+               f"{v_drive:g} V, 1 m, "
                "on axis. 'direct' = the driver in that chamber radiating into the room.",
                "",
                "| frequency | direct | with horn | gain |", "| --- | --- | --- | --- |"]
