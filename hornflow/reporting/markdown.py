@@ -215,8 +215,9 @@ def _render_tail(ctx: dict) -> str:
     L += ["## 13. Constraint sensitivity", "",
           "Evidence: **ONE_DIMENSIONAL_SIMULATION**", "",
           "| limit | stricter | relaxed | d mean SPL | d variation | d cutoff | "
-          "d excursion | d envelope |",
-          "| --- | --- | --- | --- | --- | --- | --- | --- |"]
+          "d excursion | d envelope | geometry moved (relaxed) | "
+          "no effect (stricter, relaxed) |",
+          "| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |"]
     for rec in sens:
         d = rec.get("delta_relaxed", {})
         L.append(f"| {rec['limit']} | {_case(rec['stricter'])} | {_case(rec['relaxed'])} | "
@@ -224,7 +225,11 @@ def _render_tail(ctx: dict) -> str:
                  f"{_fsig(d.get('spl_variation_db_delta'),2)} | "
                  f"{_fsig(d.get('cutoff_minus3db_hz_delta'),1)} | "
                  f"{_fsig(d.get('excursion_peak_mm_delta'),4)} | "
-                 f"{_fsig(d.get('envelope_m3_delta'),4)} |")
+                 f"{_fsig(d.get('envelope_m3_delta'),4)} | "
+                 f"{_geometry_moved(rec['relaxed'])} | {_no_effect_text(rec)} |")
+    notes = [f"`{r['limit']}`: {r['note']}" for r in sens if r.get("note")]
+    if notes:
+        L += ["", "* " + "; ".join(notes) + "."]
     L += ["", "_d = relaxed - base. Do not relax a limit unless the benefit is "
           "meaningful._", ""]
 
@@ -297,9 +302,24 @@ def _render_tail(ctx: dict) -> str:
     return "\n".join(L)
 
 
+_CASE_META = ("metrics", "factor", "geometry_changed", "no_effect")
+
+
 def _case(d: dict) -> str:
-    vals = {k: v for k, v in d.items() if k != "metrics"}
+    vals = {k: v for k, v in d.items() if k not in _CASE_META}
     return ", ".join(f"{k.split('.')[-1]}={v}" for k, v in vals.items())
+
+
+def _geometry_moved(case: dict) -> str:
+    """The geometry the case actually moved, or 'none'."""
+    moved = {k: v for k, v in (case.get("geometry_changed") or {}).items() if v}
+    return ", ".join(f"{k}={v:g}" for k, v in moved.items()) or "none"
+
+
+def _no_effect_text(rec: dict) -> str:
+    """Whether each case moved no reported metric: 'stricter, relaxed'."""
+    return ", ".join(str(rec[c].get("no_effect")).lower()
+                     for c in ("stricter", "relaxed"))
 
 
 def _by_method(variants, method):

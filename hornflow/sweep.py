@@ -200,7 +200,11 @@ def shortlist(rows: list) -> dict:
 
 def _effect(rows: list, axis: str) -> str:
     """Describe how one swept axis moves the in-band variation."""
-    vals = sorted({r.overrides.get(axis) for r in rows if r.ok and axis in r.overrides})
+    # a swept axis can hold "auto" and a number at once; sorting the raw values
+    # raised TypeError and killed the report (audit P11).  Numbers sort as
+    # numbers: 900/1200/1500 must not come out as 1200, 1500, 900.
+    vals = sorted({r.overrides.get(axis) for r in rows if r.ok and axis in r.overrides},
+                  key=lambda v: (isinstance(v, str), v if not isinstance(v, str) else str(v)))
     if len(vals) < 2 or not all(isinstance(v, (int, float)) for v in vals):
         return ""
     means = []

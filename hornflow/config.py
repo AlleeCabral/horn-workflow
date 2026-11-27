@@ -411,10 +411,24 @@ def driver_path(source_path: str | Path) -> Path | None:
 
 
 def apply_overrides(raw: dict, overrides: dict) -> dict:
-    """Return a copy of ``raw`` with dotted keys ('horn.mouth_radius') replaced."""
+    """Return a copy of ``raw`` with dotted keys ('horn.mouth_radius') replaced.
+
+    A ``driver.*`` override on a definition that names its driver file is applied
+    by turning the reference into ``{"file": <ref>, ...}``, which :func:`build`
+    merges over the loaded driver.  Without this the reference was replaced by a
+    bare mapping and the driver lost every field, so a lever on the rear chamber
+    could not run at all (audit P11).
+    """
     import copy as _copy
 
     out = _copy.deepcopy(raw)
+    if any(str(k).split(".")[0] == "driver" for k in overrides):
+        ref = _driver_reference(out)
+        if ref is not None:
+            if isinstance(out.get("driver"), dict):
+                out["driver"].setdefault("file", ref)
+            else:
+                out["driver"] = {"file": ref}
     for key, value in overrides.items():
         node = out
         parts = str(key).split(".")
