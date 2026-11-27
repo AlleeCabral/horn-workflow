@@ -150,10 +150,12 @@ class AppActions:
     # ------------------------------------------------------------------ view
     def view(self) -> dict:
         draft = self.brief.draft()
+        unreadable = None
         try:
             state = self._state()
         except _StateUnreadable as exc:
-            return self._state_error_view(draft, str(exc))
+            # Keep going: the page needs the whole shell, not only an error.
+            state, unreadable = None, str(exc)
         logs = self._logs()
         v = _view.build_view(state if state is not None else {},
                              run_dir=self.run_dir, brief=draft["values"],
@@ -174,28 +176,31 @@ class AppActions:
         if state is not None:
             v["project"]["name"] = ((state.project or {}).get("name")
                                     or v["project"]["name"])
+        if unreadable is not None:
+            v = self._state_error_view(v, unreadable)
         return v
 
-    def _state_error_view(self, draft: dict, message: str) -> dict:
-        """The page the host serves for a run whose state cannot be read.
+    def _state_error_view(self, v: dict, message: str) -> dict:
+        """Turn a normal view into the "state cannot be read" view.
 
-        It keeps the shell (tabs, definitions, run list) and says what is wrong.
-        It never falls back to the first-run view, and it never offers to act on
-        the run.
+        The shape is the one ``build_view`` produced, never a hand-built dict:
+        the page draws its shell only from a view that carries ``view_schema``
+        and the keys the view model always has, so a missing key made app.js
+        fall back to ``viewerOnly()``, which removes the tabs and never renders
+        the message (review of HORN-17).
+
+        It keeps the shell (tabs, definitions, run list), never falls back to
+        the first-run view, and never offers to act on the run.
         """
-        return {
-            "mode": "state_error",
-            "error": {"code": "state_unreadable", "message": message},
-            "host": "local",
-            "run": {"run_id": (self.run_dir.name if self.run_dir else None)},
-            "current_state": {}, "completion": {}, "gates": [], "questions": [],
-            "outcome": {}, "import_panel": {}, "next_action": None,
-            "unvalidated_accepted": False,
-            "definitions": self.brief.definitions(),
-            "runs": self.runs(),
-            "brief_draft": draft,
-            "live": self.progress(),
-        }
+        v["mode"] = "state_error"
+        v["error"] = {"code": "state_unreadable", "message": message}
+        v["next_action"] = None
+        v["outcome"] = {}
+        v["current_state"] = {}
+        v["completion"] = {}
+        v["brief_actions"] = {}
+        v["run"] = {"run_id": (self.run_dir.name if self.run_dir else None)}
+        return v
 
     def _frozen_matches(self, draft: dict) -> bool:
         frozen = self.brief._read_yaml(self.brief.dir / "brief.yaml")  # noqa: SLF001
