@@ -189,6 +189,15 @@ def test_directivity_helpers():
     check("piston Q -> 2 (half space) for ka -> 0", close(q_small, 2.0, 1e-4), f"{q_small:.6f}")
     q_big = float(theory.piston_q(np.array([10.0]), half_space=True)[0])
     check("piston Q ~ (ka)^2 for ka >> 1", 0.8 < q_big / 100.0 < 1.2, f"Q(ka=10) = {q_big:.1f}")
+    # free space (no baffle) is omnidirectional at low ka: Q -> 1, DI -> 0 dB.
+    # The baffled formula clamped to Q >= 1 gave 3 dB here (audit P4).
+    q_free = float(theory.piston_q(np.array([0.01]), half_space=False)[0])
+    check("piston Q -> 1 (free space) for ka -> 0", close(q_free, 1.0, 5e-3), f"Q = {q_free:.4f}")
+    di_free = float(theory.piston_di(0.01, half_space=False)[0])
+    check("piston DI(free space) -> 0 dB for ka -> 0", abs(di_free) < 0.05, f"DI = {di_free:.4f} dB")
+    di_half = float(theory.piston_di(0.01, half_space=True)[0])
+    check("piston DI(half space) -> 3.01 dB for ka -> 0", abs(di_half - 3.0103) < 0.05,
+          f"DI = {di_half:.4f} dB")
 
 
 def test_driver_electrical():

@@ -601,16 +601,30 @@ def intercept_frequency(mouth_size_mm: float, coverage_deg: float) -> float:
 
 
 def piston_q(ka, half_space: bool = True) -> np.ndarray:
-    """Directivity factor of a piston in an infinite baffle (mouth radiation).
+    """Directivity factor of a piston (mouth radiation).
 
-    Q = (ka)^2 / (1 - J1(2ka)/ka);  Q -> 2 for ka -> 0 (half space), Q ~ (ka)^2
-    for large ka (see the DI discussion in Part 2).
+    In an infinite baffle (``half_space=True``): Q = (ka)^2 / (1 - J1(2ka)/ka),
+    so Q -> 2 for ka -> 0 (half space) and Q ~ (ka)^2 for large ka (see the DI
+    discussion in Part 2).
+
+    In free space (``half_space=False``) there is no baffle, so the
+    low-frequency limit is omnidirectional: Q -> 1 (DI 0 dB).  The baffled
+    formula clamped to Q >= 1 answered 3 dB here, which is the error the audit
+    calls P4.  There is no closed form for the unbaffled piston across ka, so
+    this is a screening approximation: ``Q = 1 + (ka)^2`` for ``ka < 1``, which
+    is the free-space limit at low ka and meets the baffled curve at
+    ``ka = 1``, where the baffled expression takes over.  Source for the
+    limits: Beranek, Acoustics (1954), ch. 4, piston radiation; cf. the DI
+    discussion in Part 2.  ANALYTICAL_ESTIMATE, not a BEM replacement.
     """
     ka = np.atleast_1d(np.asarray(ka, dtype=float))
     safe = np.maximum(ka, 1e-12)
     zr = 1.0 - special.j1(2.0 * safe) / safe
-    q = safe ** 2 / np.maximum(zr, 1e-12)
-    return np.maximum(q, 2.0 if half_space else 1.0)
+    baffled = np.maximum(safe ** 2 / np.maximum(zr, 1e-12), 2.0)
+    if half_space:
+        return baffled
+    free = 1.0 + safe ** 2
+    return np.where(safe < 1.0, free, baffled)
 
 
 def piston_di(ka, half_space: bool = True) -> np.ndarray:

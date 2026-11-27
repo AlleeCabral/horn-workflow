@@ -183,6 +183,85 @@ def test_acoustic_master_from_design_matches_length():
     assert all(sec.area > 0 for sec in lat)
 
 
+# ------------------------------------------------------ physics corrections
+def test_displacement_spl_is_rms_referenced():
+    """Peak pressure from a peak Xmax is compared with 20 uPa *rms* (P5)."""
+    from hornflow.physics.feasibility import _displacement_spl
+
+    v = _displacement_spl(50.0, 0.05286, 0.01135, 1.205, 343.0, half_space=True)
+    peak = 20 * np.log10(1.205 * (2 * np.pi * 50) ** 2 * 0.05286 * 0.01135
+                         / (2 * np.pi * 1.0) / 20e-6)
+    assert abs(v - (peak - 20 * np.log10(np.sqrt(2)))) < 1e-9
+
+
+def test_thermal_limit_is_named_when_the_rating_is_unknown():
+    """No thermal rating is None plus a factor, never a NaN comparison (P6)."""
+    from hornflow.architecture.front_loaded import build_master
+    from hornflow.physics.feasibility import FeasibilityEvaluator
+
+    p = config.load(EXAMPLE)
+    _, master = build_master(p, "folded_horn")
+    fz = FeasibilityEvaluator().evaluate(p, master)
+    assert fz.thermal_spl_db is None
+    assert "thermal-limit-unknown" in fz.limiting_factors
+
+
+def test_state_json_is_strict_json(pipeline_run):
+    """NaN and inf tokens are not JSON; state.json must parse strictly (P6, S11)."""
+    def reject(token):
+        raise ValueError(f"non-JSON constant {token!r}")
+
+    state_path = pipeline_run / "state.json"
+    json.loads(state_path.read_text(encoding="utf-8"), parse_constant=reject)
+    from hornflow.io.state_store import load_state_file
+
+    st = load_state_file(state_path)
+    assert st.driver["Xmax_convention"] == "one_way_peak"
+    assert abs(st.driver["Xmax_one_way_peak_mm"] - st.driver["Xmax_mm"]) < 1e-9
+
+
+def test_peak_to_peak_driver_is_recorded_as_such(tmp_path):
+    """The declared convention is what lands in state.json, converted (P7)."""
+    import shutil
+
+    import yaml
+
+    from hornflow.workflow import run_pipeline
+
+    shutil.copytree(ROOT / "params", tmp_path / "params")
+    driver_path = tmp_path / "params" / "drivers" / "jbl_1200b.yaml"
+    raw = yaml.safe_load(driver_path.read_text(encoding="utf-8"))
+    raw["Xmax_convention"] = "peak_to_peak"
+    driver_path.write_text(yaml.safe_dump(raw, sort_keys=False), encoding="utf-8")
+    summary = run_pipeline(tmp_path / "params" / "horn_jbl_1200b.yaml",
+                           out_root=tmp_path / "runs")
+    from hornflow.io.state_store import load_state_file
+
+    st = load_state_file(Path(summary["run_dir"]) / "state.json")
+    assert st.driver["Xmax_convention"] == "peak_to_peak"
+    assert abs(st.driver["Xmax_one_way_peak_mm"] - 0.5 * st.driver["Xmax_mm"]) < 1e-9
+
+
+def test_auto_dimensions_are_recorded_as_null(tmp_path):
+    """'auto' is unknown, not zero: it must not count as an answered value (S11)."""
+    import shutil
+
+    import yaml
+
+    from hornflow.workflow import Pipeline
+
+    shutil.copytree(ROOT / "params", tmp_path / "params")
+    definition = tmp_path / "params" / "horn_jbl_1200b.yaml"
+    raw = yaml.safe_load(definition.read_text(encoding="utf-8"))
+    raw["horn"]["length"] = "auto"
+    raw["horn"]["mouth_area"] = "auto"
+    definition.write_text(yaml.safe_dump(raw, sort_keys=False), encoding="utf-8")
+    pipe = Pipeline(definition, out_root=tmp_path / "runs", limits={"wall_mm": 18.0})
+    pipe.stage_input_audit()
+    assert pipe.state.constraints["physical"]["depth_mm"] is None
+    assert pipe.state.constraints["physical"]["mouth_area_cm2"] is None
+
+
 if __name__ == "__main__":
     import pytest
     raise SystemExit(pytest.main([__file__, "-q"]))
