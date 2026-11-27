@@ -39,6 +39,17 @@ Thumbs.db
 tmp/
 scratch/
 
+# --- local environment (per checkout, never source) -------------------------
+# .venv/          the Python virtualenv
+# .cline/         Cline's per-developer state; the third-party Superpowers skills
+#                 inside it are installed by tools/setup_cline_superpowers.sh and
+#                 are not project source either
+# *:Zone.Identifier  NTFS alternate-data-stream leftovers from copying files off
+#                 a Windows machine; they show up in `git status` as untracked
+.venv/
+.cline/
+*:Zone.Identifier
+
 # ---------------------------------------------------------------------------
 #  Tracked on purpose (do not add to the list above)
 #  * tests/fixtures/bem_export/*.vips  - real AKABAK exports used by the golden
@@ -52,6 +63,3 @@ scratch/
 
 # the local app state (draft brief, frozen brief, generated definitions)
 .hornflow/
-
-# --- Cline: third-party Superpowers skills (installed by tools/setup_cline_superpowers.sh)
-.cline/skills/
