@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from ..architecture.registry import TIE_TOLERANCE_POINTS as _TIE_TOLERANCE_POINTS
+from ..architecture.registry import decisive_winner as _decisive_winner
 from . import limit_impact
 
 EV = "evidence"
@@ -44,7 +46,16 @@ def render(ctx: dict) -> str:
         L.append(f"* Reasons: weighted score {_fsig(best_overall.get('score'))} "
                  f"(mean SPL {_fsig(best_overall.get('spl_mean_db'),1)} dB, "
                  f"variation {_fsig(best_overall.get('spl_variation_db'),1)} dB).")
-        if best_overall.get("architecture_id") == "folded_horn":
+        decisive = _decisive_winner(scores)
+        if decisive is None:
+            top = sorted((s for s in scores if s.get("feasible")),
+                         key=lambda s: -(s.get("raw_score") or 0.0))[:2]
+            names = [s.get("display_name") for s in top] + ["", ""]
+            L.append(f"* No acoustic winner: {names[0]} and {names[1]} score within "
+                     f"{_TIE_TOLERANCE_POINTS} points; "
+                     f"{best_overall.get('display_name')} is listed first by "
+                     "preference only.")
+        elif best_overall.get("architecture_id") == "folded_horn":
             L.append("* The folded horn is also the best overall design here.")
         else:
             L.append("* The folded horn is **not** the best overall design for these "

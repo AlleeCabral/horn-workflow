@@ -827,8 +827,12 @@ def _next_action(mode: str, gates: list, questions: list, bem_state: str,
                    "the .vips spectra, then import them.",
                    "Builder", "copy_command", import_panel.get("command"))
 
+    # A tie is a finding, not a reason to re-run: the pipeline is deterministic,
+    # so "Re-run from <STAGE>" could not change it.  The report says "No acoustic
+    # winner" and the owner's decision is the honest next step (decision D4).
     rejects = [c for c in (outcome.get("critic") or [])
-               if c.get("severity") == "reject" and not c.get("passed")]
+               if c.get("severity") == "reject" and not c.get("passed")
+               and c.get("check") != "preference_not_decisive"]
     if rejects:
         return act("act.critic", "Re-run from <STAGE>",
                    f"Critic: {rejects[0].get('check')}", "Acoustics")

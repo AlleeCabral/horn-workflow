@@ -259,6 +259,50 @@ def test_stage_one_loads_the_snapshot_it_wrote(tmp_path, monkeypatch):
     assert seen[0] == Path(s["run_dir"]) / "inputs" / "definition.yaml"
 
 
+# ------------------------------------------------------------------- scoring
+def test_tie_is_reported_as_no_acoustic_winner(pipeline_run):
+    """Two horns with identical 1-D metrics are a tie, not a winner (P1, D4)."""
+    from hornflow.io.state_store import load_state_file
+
+    st = load_state_file(pipeline_run / "state.json")
+    finding = {f["check"]: f for f in st.critic_findings}["preference_not_decisive"]
+    assert finding["passed"] is False
+    assert finding["severity"] == "reject"
+    report = (pipeline_run / "deliverables" / "report.md").read_text(encoding="utf-8")
+    assert "No acoustic winner" in report
+    assert "is also the best overall design" not in report
+
+
+def test_the_preference_bonus_is_one_point_on_the_db_scale():
+    """The bonus is a tie-breaker, not a 5-point head start (D4)."""
+    from hornflow.architecture import registry
+
+    scores = registry.score([
+        _Scored("sealed_box", 91.5, 0.0, True),
+        _Scored("folded_horn", 91.0, 0.0, True),
+    ])
+    assert registry.PREFERENCE_BONUS == {"folded_horn": 1.0}
+    assert registry.TIE_TOLERANCE_POINTS == 0.5
+    # the bonus flips the reported order, and only by one point
+    assert [s["architecture_id"] for s in scores] == ["folded_horn", "sealed_box"]
+    assert scores[0]["score"] == pytest.approx(92.0)
+    # the acoustic evidence still names the sealed box
+    assert registry.decisive_winner(scores) == "sealed_box"
+
+
+class _Scored:
+    """A minimal ArchitectureResult stand-in for the scoring unit test."""
+
+    def __init__(self, architecture_id, spl_mean_db, spl_variation_db, feasible):
+        self.architecture_id = architecture_id
+        self.display_name = architecture_id
+        self.fidelity = "ONE_DIMENSIONAL"
+        self.feasible = feasible
+        self.implementation = "wired"
+        self.metrics = {"spl_mean_db": spl_mean_db,
+                        "spl_variation_db": spl_variation_db}
+
+
 if __name__ == "__main__":
     import pytest
     raise SystemExit(pytest.main([__file__, "-q"]))
