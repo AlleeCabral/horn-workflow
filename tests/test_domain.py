@@ -6,6 +6,7 @@ Under pytest:    python3 -m pytest tests/test_domain.py -q
 
 from __future__ import annotations
 
+import json
 import sys
 from pathlib import Path
 
@@ -110,6 +111,54 @@ def test_state_records_the_run_status_and_refuses_an_unknown_one():
         assert st.run["status"] == allowed
     with pytest.raises(ValueError):
         st.set_run_status("finished")
+
+
+def test_migration_1_1_to_1_2_keeps_unknown_keys():
+    """A 1.2 reader must not silently drop a field a later writer added (S7)."""
+    raw = json.loads((ROOT / "tests" / "fixtures" / "app_view"
+                      / "jbl_state_trimmed.json").read_text(encoding="utf-8"))
+    raw["schema_version"] = "1.1"
+    raw["future_field"] = {"a": 1}
+    st = load_state(raw)
+    assert SCHEMA_VERSION == "1.2"
+    assert st.schema_version == "1.2"
+    assert st.to_dict()["future_field"] == {"a": 1}
+    # a 1.1 run has no input snapshot and no run status
+    assert st.run["inputs"] is None
+    assert st.run["status"] == "completed"
+    steps = [(m["from_schema"], m["to_schema"]) for m in st.migrations]
+    assert ("1.1", "1.2") in steps
+
+
+# ---------------------------------------------------------------- driver lookup
+def test_a_normal_load_uses_the_absolute_driver_it_names(tmp_path):
+    """A file beside the definition must not replace the driver it names (#14)."""
+    real = ROOT / "params" / "drivers" / "jbl_1200b.yaml"
+    outside = tmp_path / "outside" / real.name
+    outside.parent.mkdir()
+    outside.write_bytes(real.read_bytes())
+    (tmp_path / real.name).write_text("driver:\n  dD: 1\n", encoding="utf-8")
+    definition = tmp_path / "definition.yaml"
+    definition.write_text(
+        EXAMPLE.read_text(encoding="utf-8").replace(
+            "driver: jbl_1200b.yaml", f"driver: {outside}"), encoding="utf-8")
+    params = config.load(definition)
+    assert params.driver is not None and params.driver.name == "jbl_1200b"
+
+
+def test_a_snapshot_load_prefers_the_driver_next_to_the_definition(tmp_path):
+    """A run snapshot carries its own driver and must not read back outside (#14)."""
+    real = ROOT / "params" / "drivers" / "jbl_1200b.yaml"
+    (tmp_path / real.name).write_bytes(real.read_bytes())
+    outside = tmp_path / "outside" / real.name
+    outside.parent.mkdir()
+    outside.write_text("driver:\n  dD: 1\n", encoding="utf-8")
+    definition = tmp_path / "definition.yaml"
+    definition.write_text(
+        EXAMPLE.read_text(encoding="utf-8").replace(
+            "driver: jbl_1200b.yaml", f"driver: {outside}"), encoding="utf-8")
+    params = config.load(definition, snapshot=True)
+    assert params.driver is not None and params.driver.name == "jbl_1200b"
 
 
 # ---------------------------------------------------------------- config units

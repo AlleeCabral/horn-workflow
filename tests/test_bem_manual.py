@@ -453,6 +453,36 @@ def test_recipe_of_a_real_stage2_run_has_checklist_and_final_import(tmp_path):
 # --------------------------------------------------------------------------- #
 #  end-to-end: the pipeline hands over, then a --bem-import resumes it
 # --------------------------------------------------------------------------- #
+def test_import_uses_the_snapshot_not_a_changed_input_path(run_copy, tmp_path):
+    """A run records its inputs at start; editing them later cannot move it (S7).
+
+    The plan edited ``params/horn_jbl_1200b.yaml`` in a copy of the project, but
+    the copied state still points at the repository file, so the test would have
+    passed without a snapshot.  Pointing ``run.input_path`` at an unparseable
+    file proves the import never reads it.
+    """
+    broken = tmp_path / "broken.yaml"
+    broken.write_text("broken: [", encoding="utf-8")
+    update_state(run_copy / "state.json",
+                 lambda st: st.run.__setitem__("input_path", str(broken)))
+    res = bem_import.import_into_run(run_copy, copy_exports(run_copy), tolerance_db=12.0)
+    # 12 dB is above the default tolerance, so a passing comparison lands in the
+    # tolerance state (decision D1), never in BEM_VALIDATED.
+    assert res["state"] in ("BEM_VALIDATED", "BEM_REJECTED",
+                            "BEM_ACCEPTED_WITH_TOLERANCE")
+    assert res["attempt_passed"] is True
+
+
+def test_run_inputs_can_be_reloaded_from_the_run_alone(run_copy):
+    """The snapshot loads without the paths the run was created from."""
+    from hornflow import config
+    from hornflow.io.state_store import run_input_path
+
+    st = load_state_file(run_copy / "state.json")
+    params = config.load(run_input_path(run_copy, st))
+    assert params.project
+
+
 def test_pipeline_generates_manual_inputs_and_is_not_validated(tmp_path):
     s = run_pipeline(EXAMPLE, out_root=tmp_path, limits={"wall_mm": 18.0})
     run_dir = Path(s["run_dir"])

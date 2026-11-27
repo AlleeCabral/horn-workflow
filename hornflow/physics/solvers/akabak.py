@@ -62,12 +62,16 @@ class AkabakSolver:
     # ------------------------------------------------------------------ inputs
     def write_inputs(self, surface_mesh: _mesh.SurfaceMesh, out_dir, *,
                      mesh_frequency: float = 500.0, run_id: str | None = None,
-                     project: str | None = None, input_path=None) -> dict:
+                     project: str | None = None, input_path=None,
+                     run_dir=None) -> dict:
         """Write the complete BEM input artifact for an arbitrary surface mesh.
 
         Everything AKABAK needs is produced here - the MSH 2.2 mesh, the
         lumped-element driver script, the run manifest and the run-specific
         checklist - so the human only has to perform the documented GUI actions.
+
+        ``run_dir`` makes the manifest store its paths relative to the run, so a
+        copied run folder still describes itself (audit S7).
         """
         out = Path(out_dir)
         out.mkdir(parents=True, exist_ok=True)
@@ -83,7 +87,8 @@ class AkabakSolver:
             solver=self.name, solver_version=self.version, fidelity=self.fidelity,
             bem_dir=out, export_dir=out / "export", files=files,
             expected_exports=["*.vips"],
-            notes=f"{SOLVER_LABEL} under Wine; the GUI solve is manual by design.")
+            notes=f"{SOLVER_LABEL} under Wine; the GUI solve is manual by design.",
+            base_dir=run_dir)
         _manual.write_manifest(manifest, out / _manual.MANIFEST_NAME)
         files["recipe"] = str(self.write_recipe(out, manifest, rid, surface_mesh))
         files["manifest"] = str(out / _manual.MANIFEST_NAME)

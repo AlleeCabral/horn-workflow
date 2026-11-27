@@ -54,19 +54,25 @@ LEVERS = (
 )
 
 
-def run_sensitivity(param_path, levers=LEVERS) -> list:
-    """Return one record per lever with base / stricter / relaxed metrics."""
-    base_params = config.load(param_path)
+def run_sensitivity(param_path, levers=LEVERS, *, snapshot: bool = False) -> list:
+    """Return one record per lever with base / stricter / relaxed metrics.
+
+    ``snapshot`` is passed to :func:`config.load`: a run's own copy resolves its
+    driver inside the run, a plain definition resolves it as written.
+    """
+    base_params = config.load(param_path, snapshot=snapshot)
     base = _metrics(base_params)
     out = []
     for name, key, stricter, relaxed, unit in levers:
         try:
-            p_str = config.load(param_path, overrides=copy.deepcopy(stricter))
+            p_str = config.load(param_path, overrides=copy.deepcopy(stricter),
+                                snapshot=snapshot)
             m_str = _metrics(p_str)
         except Exception as exc:                       # expected infeasibility
             m_str = {"error": str(exc)}
         try:
-            p_rel = config.load(param_path, overrides=copy.deepcopy(relaxed))
+            p_rel = config.load(param_path, overrides=copy.deepcopy(relaxed),
+                                snapshot=snapshot)
             m_rel = _metrics(p_rel)
         except Exception as exc:
             m_rel = {"error": str(exc)}

@@ -149,6 +149,116 @@ def test_a_stage_exception_is_recorded_and_reraised(tmp_path, monkeypatch):
     assert rec["failure"]["failed_checks"] == ["RuntimeError('solver exploded')"]
 
 
+# ------------------------------------------------------------- reproducibility
+def test_run_snapshots_its_inputs(pipeline_run):
+    """The run keeps a byte-identical copy of what it was started from (S7)."""
+    from hornflow.io.artifacts import sha256_file
+    from hornflow.io.state_store import load_state_file
+
+    st = load_state_file(pipeline_run / "state.json")
+    inp = st.run["inputs"]
+    definition = pipeline_run / inp["definition"]
+    driver = pipeline_run / inp["driver"]
+    assert definition.read_bytes() == EXAMPLE.read_bytes()
+    assert driver.read_bytes() == (ROOT / "params" / "drivers"
+                                  / "jbl_1200b.yaml").read_bytes()
+    assert inp["definition_sha256"] == sha256_file(definition)
+    assert inp["driver_sha256"] == sha256_file(driver)
+    assert isinstance(inp["limits"], dict)
+    assert isinstance(inp["code_version"], str) and inp["code_version"]
+    # a run folder may be moved: nothing in the snapshot names an absolute path
+    assert not any(str(v).startswith("/") for v in inp.values() if isinstance(v, str))
+
+
+def test_the_bem_manifest_paths_are_relative_to_the_run(pipeline_run):
+    """Generated files carry no absolute paths (audit S7)."""
+    man = json.loads((pipeline_run / "deliverables" / "bem"
+                      / "bem_manifest.json").read_text(encoding="utf-8"))
+
+    def strings(obj):
+        if isinstance(obj, str):
+            yield obj
+        elif isinstance(obj, dict):
+            for value in obj.values():
+                yield from strings(value)
+        elif isinstance(obj, list):
+            for value in obj:
+                yield from strings(value)
+
+    assert [s for s in strings(man) if s.startswith("/")] == []
+    assert man["bem_dir"] == "deliverables/bem"
+    assert man["files"]["mesh"]["path"] == "deliverables/bem/bem.msh"
+
+
+def _definition_with_driver(tmp_path, reference: str) -> Path:
+    """An example definition that names its driver exactly as ``reference``."""
+    definition = tmp_path / "definition.yaml"
+    definition.write_text(
+        EXAMPLE.read_text(encoding="utf-8").replace(
+            "driver: jbl_1200b.yaml", f"driver: {reference}"),
+        encoding="utf-8")
+    return definition
+
+
+def test_a_driver_reference_keeps_its_folders_in_the_snapshot(tmp_path):
+    """A ``drivers/x.yaml`` reference must resolve inside the snapshot (review #14)."""
+    drivers = tmp_path / "drivers"
+    drivers.mkdir()
+    real = ROOT / "params" / "drivers" / "jbl_1200b.yaml"
+    (drivers / real.name).write_bytes(real.read_bytes())
+    definition = _definition_with_driver(tmp_path, "drivers/jbl_1200b.yaml")
+    s = run_pipeline(definition, out_root=tmp_path / "runs", limits={"wall_mm": 18.0})
+    st = load_state_file(Path(s["run_dir"]) / "state.json")
+    inp = st.run["inputs"]
+    assert inp["driver"] == "inputs/drivers/jbl_1200b.yaml"
+    copied = Path(s["run_dir"]) / inp["driver"]
+    assert copied.read_bytes() == real.read_bytes()
+    # the run finished, so the sensitivity stage could read the snapshot too
+    assert st.stage_status("CONSTRAINT_SENSITIVITY") == "passed"
+
+
+def test_a_driver_reference_that_escapes_the_definition_folder_is_refused(tmp_path):
+    from hornflow.workflow.orchestrator import Pipeline
+
+    outside = tmp_path / "outside" / "jbl_1200b.yaml"
+    outside.parent.mkdir()
+    outside.write_bytes((ROOT / "params" / "drivers" / "jbl_1200b.yaml").read_bytes())
+    params = tmp_path / "params"
+    params.mkdir()
+    definition = _definition_with_driver(params, "../outside/jbl_1200b.yaml")
+    pipe = Pipeline(definition, out_root=tmp_path / "runs", limits={"wall_mm": 18.0})
+    with pytest.raises(ValueError, match=r"\.\."):
+        pipe._snapshot_inputs()                          # noqa: SLF001 - the subject
+
+
+def test_a_driver_named_like_the_definition_snapshot_is_refused(tmp_path):
+    from hornflow.workflow.orchestrator import Pipeline
+
+    driver = tmp_path / "definition.yaml"
+    driver.write_bytes((ROOT / "params" / "drivers" / "jbl_1200b.yaml").read_bytes())
+    definition = _definition_with_driver(tmp_path, "definition.yaml")
+    pipe = Pipeline(definition, out_root=tmp_path / "runs", limits={"wall_mm": 18.0})
+    with pytest.raises(ValueError, match="definition.yaml"):
+        pipe._snapshot_inputs()                          # noqa: SLF001 - the subject
+
+
+def test_stage_one_loads_the_snapshot_it_wrote(tmp_path, monkeypatch):
+    """The stages must read the bytes the run recorded, not the file it came from."""
+    from hornflow.workflow import orchestrator as o
+
+    seen = []
+    real = o.config.load
+
+    def spy(path, *args, **kwargs):
+        seen.append(Path(path))
+        return real(path, *args, **kwargs)
+
+    monkeypatch.setattr(o.config, "load", spy)
+    s = run_pipeline(EXAMPLE, out_root=tmp_path, limits={"wall_mm": 18.0})
+    assert seen, "the pipeline load its definition"
+    assert seen[0] == Path(s["run_dir"]) / "inputs" / "definition.yaml"
+
+
 if __name__ == "__main__":
     import pytest
     raise SystemExit(pytest.main([__file__, "-q"]))

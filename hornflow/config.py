@@ -338,12 +338,18 @@ def _build_driver(d: dict) -> Driver:
     )
 
 
-def load(path: str | Path, overrides: dict | None = None) -> Params:
+def load(path: str | Path, overrides: dict | None = None, *,
+         snapshot: bool = False) -> Params:
     """Read and validate a definition file, returning SI-unit dataclasses.
 
     ``overrides`` are dotted item paths, e.g. {"horn.mouth_radius": 600}, applied
     to the file content before validation.  The sweep mode uses this to run the
     same file with a grid of parameter values.
+
+    ``snapshot`` says the file is a run's own copy (``inputs/definition.yaml``):
+    a driver next to it then wins over an absolute reference, so a snapshot can
+    never read a driver from outside the run (audit S7).  Any other caller gets
+    the driver the file names, even when a same-named file sits beside it.
     """
     path = Path(path)
     if not path.is_file():
@@ -351,7 +357,57 @@ def load(path: str | Path, overrides: dict | None = None) -> Params:
     raw = yaml.safe_load(path.read_text(encoding="utf-8")) or {}
     if overrides:
         raw = apply_overrides(raw, overrides)
-    return build(raw, source_path=path)
+    return build(raw, source_path=path, snapshot=snapshot)
+
+
+def driver_reference(source_path: str | Path) -> str | None:
+    """The driver file name a definition writes, exactly as it writes it."""
+    raw = yaml.safe_load(Path(source_path).read_text(encoding="utf-8")) or {}
+    return _driver_reference(raw)
+
+
+def _driver_reference(raw: dict) -> str | None:
+    """The driver file a definition names, or None when it carries one inline."""
+    d = (raw or {}).get("driver", {}) or {}
+    if isinstance(d, str):
+        return d
+    if isinstance(d, dict) and "file" in d:
+        return str(d["file"])
+    return None
+
+
+def _resolve_driver(base: Path, ref: Path, *, snapshot: bool = False) -> Path:
+    """The driver file a definition references, resolved the same way everywhere.
+
+    A relative reference is looked up next to the definition, then under
+    ``drivers/``.  An absolute reference is used as written unless ``snapshot``
+    is set: a run's own copy sits next to its definition, and reading the
+    snapshot must not reach back to the file it was copied from (audit S7).
+    """
+    if ref.is_absolute():
+        if not snapshot:
+            return ref
+        sibling = base / ref.name
+        return sibling if sibling.is_file() else ref
+    cand = base / ref
+    if cand.is_file():
+        return cand
+    return base / "drivers" / ref.name
+
+
+def driver_path(source_path: str | Path) -> Path | None:
+    """The driver file a definition points at, or None when it has none.
+
+    Same resolution as :func:`build`, so a caller can copy exactly the file the
+    pipeline will read.
+    """
+    source_path = Path(source_path)
+    raw = yaml.safe_load(source_path.read_text(encoding="utf-8")) or {}
+    name = _driver_reference(raw)
+    if name is None:
+        return None
+    cand = _resolve_driver(source_path.resolve().parent, Path(name))
+    return cand if cand.is_file() else None
 
 
 def apply_overrides(raw: dict, overrides: dict) -> dict:
@@ -377,7 +433,7 @@ def parse_value(text: str):
     return yaml.safe_load(str(text))
 
 
-def build(raw: dict, source_path=None) -> Params:
+def build(raw: dict, source_path=None, *, snapshot: bool = False) -> Params:
     """Validate an already parsed definition mapping (use load() normally)."""
     t = raw.get("target", {}) or {}
     h = raw.get("horn", {}) or {}
@@ -386,13 +442,11 @@ def build(raw: dict, source_path=None) -> Params:
 
     # a driver may live in its own file:  driver: jbl_1200b.yaml
     #                              or:  driver: {file: drivers/jbl_1200b.yaml}
-    if isinstance(d, str) or (isinstance(d, dict) and "file" in d):
-        name = d if isinstance(d, str) else d["file"]
+    name = _driver_reference(raw)
+    if name is not None:
         base = Path(source_path).resolve().parent if source_path else Path.cwd()
         ref = Path(name)
-        cand = ref if ref.is_absolute() else base / ref
-        if not cand.is_file():
-            cand = base / "drivers" / ref.name
+        cand = _resolve_driver(base, ref, snapshot=snapshot)
         if not cand.is_file():
             raise FileNotFoundError(f"driver file not found: {name} (looked in {base})")
         loaded = yaml.safe_load(cand.read_text(encoding="utf-8")) or {}

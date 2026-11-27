@@ -154,6 +154,9 @@ def test_freeze_records_revision_hash_and_what_it_applied(project):
     assert written["brief"]["limits"]["min_safe_impedance_ohm"] == 3.0
     # the implied volume limit comes from W x H x D
     assert written["brief"]["limits"]["max_external_volume_m3"] == pytest.approx(0.9)
+    # a later freeze never overwrites an earlier revision's definition (S7)
+    assert first["definition"] != second["definition"]
+    assert (proj / first["definition"]).is_file()
 
 
 def test_the_input_hash_is_stable_for_the_same_values(project):
@@ -256,7 +259,7 @@ def test_start_run_uses_the_frozen_definition_and_its_limits(project):
     a = _actions(project, runner=runner)
     a.freeze(dict(ANSWERS))
     a.start_run(wait=True)
-    assert seen["path"].name == "club_sub_corner.yaml"
+    assert seen["path"].name == "club_sub_corner-r1.yaml"
     assert seen["path"].is_file()
     assert seen["out_root"] == (_project_root(project) / "runs").resolve()
     # the limits come from the brief, not from a caller
@@ -265,7 +268,7 @@ def test_start_run_uses_the_frozen_definition_and_its_limits(project):
     prog = a.progress()
     assert prog["state"] == "done"
     assert prog["run_id"] == "run_fake_1"
-    assert prog["definition"].endswith("club_sub_corner.yaml")
+    assert prog["definition"].endswith("club_sub_corner-r1.yaml")
 
 
 def _project_root(project):

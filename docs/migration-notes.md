@@ -213,6 +213,29 @@ recorded in the new `state.migrations` list, so it is explicit and inspectable
 rather than silent. `hornflow/domain/state.py` refuses any version with no
 registered path forward.
 
+### state.json 1.1 -> 1.2 (registered migration, Phase 0 Task 8)
+
+A 1.2 run records the inputs it was started from. `run.inputs` holds
+`definition` (`inputs/definition.yaml`), `definition_sha256`, `driver`
+(`inputs/<driver name>`, or null when the definition carries the driver inline),
+`driver_sha256`, `limits` and `code_version` (`git describe --always --dirty`,
+or `hornflow.__version__` when git is not available). The definition and the
+driver are copied byte for byte into the run, so `state.json` plus the run folder
+say what was built even after the original files are edited or moved.
+
+Loading a 1.1 state adds `run.inputs = null` and `run.status = "completed"` when
+they are missing, and records the step in `state.migrations`. A 1.1 run has no
+snapshot: `hornflow.io.state_store.run_input_path` answers with the recorded path
+and logs that the run is "not reproducible". Top-level keys this reader does not
+know are kept under `DesignState.extra` and written back, so loading and saving
+an old file with a newer writer cannot drop fields.
+
+The BEM manifest follows the same rule: when it is written for a run, its paths
+are stored relative to the run directory and resolved back to absolute paths when
+it is read. Frozen briefs also stop overwriting themselves: revision `n` writes
+`.hornflow/generated/<slug>-r<n>.yaml`, so an earlier run keeps the definition it
+used.
+
 ### view_schema 1.1 -> 1.2 (the Workflow stages)
 
 1.2 adds to `app_view.json`: `completion` (per-field `accepted`, per-group and

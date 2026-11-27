@@ -137,16 +137,54 @@ class RunManifest:
     # The tolerance this run was set up with (Phase 0 Task 6, decision D1).
     # Mirrors bem_manual.DEFAULT_TOLERANCE_DB; None means "use the default".
     tolerance_db: float | None = None
+    # The directory the file's paths are stored relative to (the run directory).
+    # Never serialized: it only tells to_dict/from_dict how to convert, so the
+    # manifest on disk carries no absolute path (audit S7).
+    base_dir: str | None = field(default=None, repr=False)
 
     def to_dict(self) -> dict:
-        return asdict(self)
+        d = asdict(self)
+        base = d.pop("base_dir", None)
+        if base:
+            for key in ("input_path", "bem_dir", "export_dir"):
+                d[key] = _relative_path(d.get(key), base)
+            d["files"] = {k: {**v, "path": _relative_path(v.get("path"), base)}
+                          for k, v in (d.get("files") or {}).items()}
+        return d
 
     @classmethod
-    def from_dict(cls, d: dict) -> "RunManifest":
+    def from_dict(cls, d: dict, base=None) -> "RunManifest":
         # Only fields the file actually carries: an older manifest keeps the
         # dataclass defaults instead of turning them into None.
         known = {f: d[f] for f in cls.__dataclass_fields__ if f in d}  # type: ignore[attr-defined]
-        return cls(**known)                                            # type: ignore[arg-type]
+        m = cls(**known)                                               # type: ignore[arg-type]
+        if base is not None:
+            m.base_dir = str(Path(base).resolve())
+            for key in ("input_path", "bem_dir", "export_dir"):
+                setattr(m, key, _absolute_path(getattr(m, key), base))
+            m.files = {k: {**v, "path": _absolute_path(v.get("path"), base)}
+                       for k, v in (m.files or {}).items()}
+        return m
+
+
+def _relative_path(p, base) -> str:
+    """``p`` relative to ``base`` when it is inside it, else unchanged."""
+    if base in (None, "") or p in (None, ""):
+        return str(p or "")
+    try:
+        return Path(p).resolve().relative_to(Path(base).resolve()).as_posix()
+    except (ValueError, OSError):
+        return str(p)
+
+
+def _absolute_path(p, base) -> str:
+    """Resolve a stored relative path against ``base``; absolute paths pass through."""
+    if base in (None, "") or p in (None, ""):
+        return str(p or "")
+    q = Path(str(p))
+    if q.is_absolute():
+        return str(q)
+    return str((Path(base) / q).resolve())
 
 
 def build_manifest(*, run_id: str, project: str, input_path, solver: str,
@@ -154,8 +192,13 @@ def build_manifest(*, run_id: str, project: str, input_path, solver: str,
                    files: dict | None = None, expected_exports: list | None = None,
                    notes: str = "", generated_utc: str | None = None,
                    expected_graph_group: str | None = None,
-                   tolerance_db: float | None = None) -> RunManifest:
-    """Collect and fingerprint the inputs HornFlow generated for the manual solve."""
+                   tolerance_db: float | None = None,
+                   base_dir=None) -> RunManifest:
+    """Collect and fingerprint the inputs HornFlow generated for the manual solve.
+
+    ``base_dir`` is the run directory: when it is given, every path is stored
+    relative to it, so the manifest never carries a machine path (audit S7).
+    """
     rec: dict = {}
     for name, path in (files or {}).items():
         p = Path(path)
@@ -170,7 +213,8 @@ def build_manifest(*, run_id: str, project: str, input_path, solver: str,
         bem_dir=str(bem_dir), export_dir=str(export_dir),
         expected_exports=list(expected_exports or ["*.vips"]),
         files=rec, notes=notes, expected_graph_group=expected_graph_group,
-        tolerance_db=tolerance_db)
+        tolerance_db=tolerance_db,
+        base_dir=str(Path(base_dir).resolve()) if base_dir else None)
 
 
 def write_manifest(manifest: RunManifest, path) -> Path:
@@ -180,13 +224,18 @@ def write_manifest(manifest: RunManifest, path) -> Path:
     return path
 
 
-def read_manifest(path) -> "RunManifest | None":
-    """Read a manifest, or ``None`` when the file is absent/unreadable."""
+def read_manifest(path, base=None) -> "RunManifest | None":
+    """Read a manifest, or ``None`` when the file is absent/unreadable.
+
+    ``base`` is the run directory the stored paths are relative to; with it the
+    returned object holds absolute paths whatever the file says.
+    """
     path = Path(path)
     if not path.is_file():
         return None
     try:
-        return RunManifest.from_dict(json.loads(path.read_text(encoding="utf-8")))
+        return RunManifest.from_dict(json.loads(path.read_text(encoding="utf-8")),
+                                     base=base)
     except (ValueError, TypeError, OSError):
         return None
 
