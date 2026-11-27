@@ -85,3 +85,23 @@ def test_update_state_returns_the_result_of_fn(pipeline_run, tmp_path):
     out = update_state(p, lambda st: (len(st.decision_log), st.run.get("run_id")))
     assert out[0] == len(load_state_file(p).decision_log)
     assert out[1] == pipeline_run.name
+
+
+# --------------------------------------------------------------------------- #
+#  which definition a run was made from (audit S7)
+# --------------------------------------------------------------------------- #
+def test_run_input_path_prefers_the_snapshot_and_warns_without_one(tmp_path, caplog):
+    from hornflow.domain.state import DesignState
+    from hornflow.io.state_store import run_input_path
+
+    run_dir = tmp_path / "run"
+    st = DesignState()
+    st.run = {"inputs": {"definition": "inputs/definition.yaml"}}
+    assert run_input_path(run_dir, st) == run_dir / "inputs" / "definition.yaml"
+
+    original = tmp_path / "original.yaml"
+    old = DesignState()
+    old.run = {"run_id": "run_old", "input_path": str(original)}
+    with caplog.at_level("WARNING"):
+        assert run_input_path(run_dir, old) == original
+    assert "not reproducible" in caplog.text

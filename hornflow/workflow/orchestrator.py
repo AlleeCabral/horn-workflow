@@ -14,12 +14,13 @@ from .. import architecture, config, fold
 from ..architecture.base import DesignContext
 from ..architecture.front_loaded import build_master
 from ..critique import critic
+from ..domain.evidence import code_version
 from ..domain.ids import stable_id
 from ..domain.state import DesignState, SCHEMA_VERSION
 from ..domain.limits import Constraint, InputStatus
-from ..io.artifacts import ArtifactStore, new_run_id
+from ..io.artifacts import ArtifactStore, new_run_id, sha256_file, atomic_write
 from ..io.logs import StageLogger
-from ..io.state_store import save_state
+from ..io.state_store import run_input_path, save_state
 from ..manufacturing.additive import AdditiveTransformer
 from ..manufacturing.plywood import PlywoodTransformer
 from ..manufacturing import exporters
@@ -168,8 +169,39 @@ class Pipeline:
             "input_path": str(Path(self.param_path).resolve()),
             "python": __import__("platform").python_version(),
             "git_commit": None,
+            "inputs": self._snapshot_inputs(),
         })
         return "passed"
+
+    def _snapshot_inputs(self) -> dict:
+        """Copy the definition and its driver into the run, byte for byte (S7).
+
+        Everything that later reads ``state.run["input_path"]`` used to depend on
+        a file outside the run: edit it and the run silently meant something
+        else.  The copy lives under ``inputs/`` and is described by its hash, so
+        the run directory alone says what was built.
+        """
+        source = Path(self.param_path)
+        dest = self.run_dir / "inputs"
+        definition = dest / "definition.yaml"
+        dest.mkdir(parents=True, exist_ok=True)
+        atomic_write(definition, source.read_bytes())
+        inputs = {
+            "definition": "inputs/definition.yaml",
+            "definition_sha256": sha256_file(definition),
+            "driver": None,
+            "driver_sha256": None,
+            "limits": dict(self.limits),
+            "code_version": code_version(),
+        }
+        driver = config.driver_path(source)
+        if driver is not None:
+            # keep the name the definition uses, so it resolves inside the snapshot
+            copied = dest / driver.name
+            atomic_write(copied, driver.read_bytes())
+            inputs["driver"] = f"inputs/{copied.name}"
+            inputs["driver_sha256"] = sha256_file(copied)
+        return inputs
 
     # ------------------------------------------------------------------ 2
     def stage_limit_impact(self):
@@ -279,7 +311,8 @@ class Pipeline:
         ak = AkabakSolver(self.params)
         info = ak.write_inputs(cav, self.deliverables / "bem", run_id=self.run_id,
                                project=self.params.project,
-                               input_path=self.param_path)
+                               input_path=run_input_path(self.run_dir, self.state),
+                               run_dir=self.run_dir)
         self.state.validation["bem_inputs"] = info["files"]
         self.state.validation["bem_status"] = info["status"]
         self.state.validation["bem_manual"] = {
@@ -335,7 +368,8 @@ class Pipeline:
 
     # ------------------------------------------------------------------ 13
     def stage_sensitivity(self):
-        self.sensitivity = run_sensitivity(self.param_path)
+        # read the run's own snapshot, not the file it was started from (S7)
+        self.sensitivity = run_sensitivity(run_input_path(self.run_dir, self.state))
         self.state.sensitivity_runs = self.sensitivity
         return "passed"
 

@@ -149,6 +149,47 @@ def test_a_stage_exception_is_recorded_and_reraised(tmp_path, monkeypatch):
     assert rec["failure"]["failed_checks"] == ["RuntimeError('solver exploded')"]
 
 
+# ------------------------------------------------------------- reproducibility
+def test_run_snapshots_its_inputs(pipeline_run):
+    """The run keeps a byte-identical copy of what it was started from (S7)."""
+    from hornflow.io.artifacts import sha256_file
+    from hornflow.io.state_store import load_state_file
+
+    st = load_state_file(pipeline_run / "state.json")
+    inp = st.run["inputs"]
+    definition = pipeline_run / inp["definition"]
+    driver = pipeline_run / inp["driver"]
+    assert definition.read_bytes() == EXAMPLE.read_bytes()
+    assert driver.read_bytes() == (ROOT / "params" / "drivers"
+                                  / "jbl_1200b.yaml").read_bytes()
+    assert inp["definition_sha256"] == sha256_file(definition)
+    assert inp["driver_sha256"] == sha256_file(driver)
+    assert isinstance(inp["limits"], dict)
+    assert isinstance(inp["code_version"], str) and inp["code_version"]
+    # a run folder may be moved: nothing in the snapshot names an absolute path
+    assert not any(str(v).startswith("/") for v in inp.values() if isinstance(v, str))
+
+
+def test_the_bem_manifest_paths_are_relative_to_the_run(pipeline_run):
+    """Generated files carry no absolute paths (audit S7)."""
+    man = json.loads((pipeline_run / "deliverables" / "bem"
+                      / "bem_manifest.json").read_text(encoding="utf-8"))
+
+    def strings(obj):
+        if isinstance(obj, str):
+            yield obj
+        elif isinstance(obj, dict):
+            for value in obj.values():
+                yield from strings(value)
+        elif isinstance(obj, list):
+            for value in obj:
+                yield from strings(value)
+
+    assert [s for s in strings(man) if s.startswith("/")] == []
+    assert man["bem_dir"] == "deliverables/bem"
+    assert man["files"]["mesh"]["path"] == "deliverables/bem/bem.msh"
+
+
 if __name__ == "__main__":
     import pytest
     raise SystemExit(pytest.main([__file__, "-q"]))

@@ -347,8 +347,10 @@ def test_state_migration_renames_and_derives_peak():
 def test_state_migration_is_recorded_not_silent():
     st = load_state(_state_v1())
     assert st.migrations, "an applied migration must be recorded in the state"
-    rec = st.migrations[-1]
-    assert rec["from_schema"] == "1.0" and rec["to_schema"] == "1.1"
+    # 1.0 now walks through 1.1 to the current schema, so the excursion step is
+    # found by its own version pair instead of being assumed to be the last one.
+    rec = next(m for m in st.migrations
+               if m["from_schema"] == "1.0" and m["to_schema"] == "1.1")
     assert "rms" in rec["detail"] and "sqrt(2)" in rec["detail"]
 
 

@@ -18,7 +18,7 @@ from .. import bem as _bem
 from .. import config
 from ..domain.evidence import now_utc
 from ..io.artifacts import atomic_write, sha256_file
-from ..io.state_store import load_state_file, update_state
+from ..io.state_store import load_state_file, run_input_path, update_state
 from ..physics.solvers import bem_manual
 from ..physics.solvers import manual as manual_mod
 
@@ -178,29 +178,12 @@ def import_into_run(run_dir, folder, *, tolerance_db: float | None = None,
     # Refuse an unknown stored state before reading the export or writing a file.
     _path_to(current, current)
 
-    params = config.load(state.run.get("input_path") or state.project.get("input_path", ""))
+    # The definition this run was started from, from the run's own snapshot
+    # (audit S7): editing the file it was created from cannot change the import.
+    params = config.load(run_input_path(run_dir, state))
     bem_dir = run_dir / "deliverables" / out_subdir
-    manifest = manual_mod.read_manifest(bem_dir / manual_mod.MANIFEST_NAME)
-    tolerance_db = bem_manual.resolve_tolerance(tolerance_db, manifest)
-    reference = reference_from_state(state)
-    if reference is None:
-        raise ValueError("the run state has no one-dimensional reference to compare against")
-
-    result = bem_manual.import_and_validate(params, reference, folder, bem_dir,
-                                            manifest=manifest, tolerance_db=tolerance_db)
-    validation = result["validation"]
-    accepted = bool(validation["passed"])
-    target = str(result["state"])
-    run_dir = Path(run_dir)
-    state = load_state_file(run_dir / "state.json")
-    stored = dict(state.validation.get("bem_manual") or {})
-    current = str(stored.get("state") or manual_mod.ManualSolveState.GUI_REQUIRED.value)
-    # Refuse an unknown stored state before reading the export or writing a file.
-    _path_to(current, current)
-
-    params = config.load(state.run.get("input_path") or state.project.get("input_path", ""))
-    bem_dir = run_dir / "deliverables" / out_subdir
-    manifest = manual_mod.read_manifest(bem_dir / manual_mod.MANIFEST_NAME)
+    manifest = manual_mod.read_manifest(bem_dir / manual_mod.MANIFEST_NAME,
+                                        base=run_dir)
     tolerance_db = bem_manual.resolve_tolerance(tolerance_db, manifest)
     reference = reference_from_state(state)
     if reference is None:
@@ -281,5 +264,4 @@ def import_into_run(run_dir, folder, *, tolerance_db: float | None = None,
     result["stored_state"] = applied["held"]
     result["attempt_passed"] = accepted
     result["report"] = str(applied["report"])
-    return result
     return result

@@ -363,7 +363,9 @@ class BriefStore:
             staging.unlink(missing_ok=True)
             return {"ok": False, "warnings": warnings, "field_errors": {
                 "_definition": f"the definition would not load: {exc}"}}
-        target = self.generated / f"{slug}.yaml"
+        # One file per revision: a later freeze must not overwrite the definition
+        # an earlier run was started from (audit S7).
+        target = self.generated / f"{slug}-r{revision}.yaml"
         staging.replace(target)
         rel = str(target.relative_to(self.root))
         self._write_yaml(self.dir / FROZEN_NAME, {

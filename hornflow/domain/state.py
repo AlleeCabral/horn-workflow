@@ -17,7 +17,7 @@ from typing import Any, Callable
 from .evidence import now_utc
 from .limits import LimitImpact
 
-SCHEMA_VERSION = "1.1"
+SCHEMA_VERSION = "1.2"
 
 # The run lifecycle.  ``run.status`` is what tells a completed run from one that
 # was interrupted or died mid-stage, which is exactly what used to be missing
@@ -59,6 +59,37 @@ def _migrate_1_0_to_1_1(d: dict) -> dict:
                 "detail": EXCURSION_MIGRATION_NOTE})
     out["migrations"] = mig
     out["schema_version"] = "1.1"
+    return out
+
+
+# --------------------------------------------------------------------------- #
+#  schema 1.1 -> 1.2 : the run records the inputs it was started from
+# --------------------------------------------------------------------------- #
+# In 1.1 the run pointed at the definition file it was started from, by path,
+# and re-read that path for exports, sensitivity and the BEM import.  Editing
+# the file after the run therefore changed what the run meant (audit S7).  A 1.2
+# run carries its own copy under ``inputs/`` with its SHA-256, so ``state.json``
+# alone says what was built.  A 1.1 run has no snapshot: ``run.inputs`` is null
+# and the reader must say so instead of pretending the run is reproducible.
+REPRODUCIBILITY_MIGRATION_NOTE = (
+    "run.inputs (definition and driver snapshot with sha256, limits, code "
+    "version) is added; a 1.1 run has no snapshot, so run.inputs stays null and "
+    "its run.status defaults to completed."
+)
+
+
+def _migrate_1_1_to_1_2(d: dict) -> dict:
+    """Record that a 1.1 run has no input snapshot, and no run status."""
+    out = dict(d)
+    run = dict(out.get("run") or {})
+    run.setdefault("inputs", None)
+    run.setdefault("status", "completed")
+    out["run"] = run
+    mig = list(out.get("migrations") or [])
+    mig.append({"from_schema": "1.1", "to_schema": "1.2",
+                "detail": REPRODUCIBILITY_MIGRATION_NOTE})
+    out["migrations"] = mig
+    out["schema_version"] = "1.2"
     return out
 
 
@@ -108,6 +139,10 @@ class DesignState:
     decision_log: list = field(default_factory=list)
     final_recommendations: dict = field(default_factory=dict)
     stages: dict = field(default_factory=dict)                 # stage -> status
+    # Top-level keys a later schema added and this reader does not know.  They
+    # are kept and written back, so loading and saving an old file with a newer
+    # one cannot silently drop fields (audit S7).
+    extra: dict = field(default_factory=dict)
 
     # ------------------------------------------------------------------ mutate
     def log(self, stage: str, event: str, **fields: Any) -> None:
@@ -137,6 +172,8 @@ class DesignState:
         out: dict = {}
         for f in STATE_FIELDS:
             out[f] = _ser(getattr(self, f))
+        for key, value in (self.extra or {}).items():
+            out.setdefault(key, _ser(value))
         return out
 
     @classmethod
@@ -145,6 +182,8 @@ class DesignState:
         for f in STATE_FIELDS:
             if f in d and d[f] is not None:
                 setattr(st, f, d[f])
+        st.extra = {k: v for k, v in d.items()
+                    if k not in STATE_FIELDS and k != "extra"}
         # re-type the limit impacts
         st.limit_impacts = [LimitImpact(**li) if isinstance(li, dict) else li
                             for li in st.limit_impacts]
@@ -163,6 +202,7 @@ class DesignState:
 # current one must fail loudly.
 MIGRATIONS: dict[str, Callable[[dict], dict]] = {
     "1.0": _migrate_1_0_to_1_1,
+    "1.1": _migrate_1_1_to_1_2,
 }
 
 

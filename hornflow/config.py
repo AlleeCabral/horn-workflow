@@ -354,6 +354,47 @@ def load(path: str | Path, overrides: dict | None = None) -> Params:
     return build(raw, source_path=path)
 
 
+def _driver_reference(raw: dict) -> str | None:
+    """The driver file a definition names, or None when it carries one inline."""
+    d = (raw or {}).get("driver", {}) or {}
+    if isinstance(d, str):
+        return d
+    if isinstance(d, dict) and "file" in d:
+        return str(d["file"])
+    return None
+
+
+def _resolve_driver(base: Path, ref: Path) -> Path:
+    """The driver file a definition references, resolved the same way everywhere.
+
+    A copy next to the definition wins over an absolute reference.  A run keeps
+    its own snapshot of the driver (audit S7), and reading the snapshot must not
+    reach back to the file it was copied from.
+    """
+    if ref.is_absolute():
+        sibling = base / ref.name
+        return sibling if sibling.is_file() else ref
+    cand = base / ref
+    if cand.is_file():
+        return cand
+    return base / "drivers" / ref.name
+
+
+def driver_path(source_path: str | Path) -> Path | None:
+    """The driver file a definition points at, or None when it has none.
+
+    Same resolution as :func:`build`, so a caller can copy exactly the file the
+    pipeline will read.
+    """
+    source_path = Path(source_path)
+    raw = yaml.safe_load(source_path.read_text(encoding="utf-8")) or {}
+    name = _driver_reference(raw)
+    if name is None:
+        return None
+    cand = _resolve_driver(source_path.resolve().parent, Path(name))
+    return cand if cand.is_file() else None
+
+
 def apply_overrides(raw: dict, overrides: dict) -> dict:
     """Return a copy of ``raw`` with dotted keys ('horn.mouth_radius') replaced."""
     import copy as _copy
@@ -386,13 +427,11 @@ def build(raw: dict, source_path=None) -> Params:
 
     # a driver may live in its own file:  driver: jbl_1200b.yaml
     #                              or:  driver: {file: drivers/jbl_1200b.yaml}
-    if isinstance(d, str) or (isinstance(d, dict) and "file" in d):
-        name = d if isinstance(d, str) else d["file"]
+    name = _driver_reference(raw)
+    if name is not None:
         base = Path(source_path).resolve().parent if source_path else Path.cwd()
         ref = Path(name)
-        cand = ref if ref.is_absolute() else base / ref
-        if not cand.is_file():
-            cand = base / "drivers" / ref.name
+        cand = _resolve_driver(base, ref)
         if not cand.is_file():
             raise FileNotFoundError(f"driver file not found: {name} (looked in {base})")
         loaded = yaml.safe_load(cand.read_text(encoding="utf-8")) or {}

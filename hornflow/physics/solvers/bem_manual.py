@@ -165,7 +165,8 @@ def _grid_detail(best) -> tuple:
 
 def _manifest_matches(manifest) -> tuple:
     """Is the manifest on disk the one we were handed, with unchanged inputs?"""
-    on_disk = read_manifest(Path(manifest.bem_dir) / MANIFEST_NAME)
+    on_disk = read_manifest(Path(manifest.bem_dir) / MANIFEST_NAME,
+                            base=getattr(manifest, "base_dir", None))
     if on_disk is None:
         return False, f"no {MANIFEST_NAME} next to the inputs"
     if on_disk.run_id != manifest.run_id:
