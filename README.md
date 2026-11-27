@@ -164,7 +164,7 @@ and every mutating action is replaced by a *Copy command* button.
 
 | endpoint | what it does |
 |---|---|
-| `GET /api/health` | liveness and the project root |
+| `GET /api/health` | liveness only (`{"ok": true}`) — it names no path |
 | `GET /api/view` | the same view model the page embeds, plus `live`, `definitions`, `runs`, `brief_draft`, `brief_actions` |
 | `GET /api/progress` | structured run progress (lock, current stage, pass counts, log tail) — the browser never parses `logs.jsonl` |
 | `GET /api/definitions` | the allow-list of definition files a run may use |
@@ -181,6 +181,20 @@ never a path. Every name is resolved through `safe_under()`, which refuses absol
 paths, `..`, `~` and symlink escapes, and all reads and writes stay under the
 project root. Errors come back structured; a traceback never reaches the page and
 the server log keeps the detail.
+
+Every request passes a guard before any route runs, static files included:
+
+- the `Host` header must be a loopback name (`127.0.0.1`, `localhost`, `::1`) or
+  the address the server was bound to, on the bound port — this is what a
+  DNS-rebinding page cannot forge, so `403 bad_host`;
+- an `Origin` header, when present, must be the same host and port — `403
+  bad_origin` (a non-browser client such as `curl` sends none, and is fine);
+- a POST body must be `application/json` — `415 bad_content_type`;
+- `Content-Length` must be an integer — `400 bad_length`.
+
+`--host` accepts anything, but anything other than a loopback address prints a
+warning: the guard only trusts loopback names and the exact address you bound, so
+a wildcard bind serves loopback clients only.
 
 The page renders a **HornFlow-emitted view model**
 (`deliverables/viewer/app_view.json`, also embedded in the HTML):

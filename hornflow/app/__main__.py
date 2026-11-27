@@ -11,7 +11,7 @@ import sys
 from pathlib import Path
 
 from .actions import AppActions
-from .server import serve
+from .server import LOOPBACK_HOSTS, serve
 
 
 def main(argv=None) -> int:
@@ -37,6 +37,12 @@ def main(argv=None) -> int:
     root = Path(args.project).resolve()
     if not root.is_dir():
         p.error(f"--project {args.project!r} is not a directory")
+    if args.host not in LOOPBACK_HOSTS:
+        print(f"hornflow.app: warning: --host {args.host} is not a loopback address "
+              "(127.0.0.1, localhost or ::1).  The API only answers requests whose "
+              "Host header is a loopback name or the address you bound, so a "
+              "wildcard bind reaches loopback clients only; bind the exact address "
+              "you will browse to.", file=sys.stderr)
     try:
         actions = AppActions(root, run_root=args.run_root,
                              base_definition=args.base,
