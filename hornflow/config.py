@@ -17,6 +17,8 @@ from typing import Any
 
 import yaml
 
+from .config_schema import ConfigError, error_lines, validate_raw
+
 MM = 1.0e-3
 CM2 = 1.0e-4
 CM3 = 1.0e-6
@@ -32,6 +34,13 @@ def _get(d: dict, key: str, where: str, default: Any = None, required: bool = Fa
     if required:
         raise KeyError(f"missing required item '{key}' in '{where}'")
     return default
+
+
+def _bool(value: Any, name: str) -> bool:
+    """A definition boolean must be a real boolean; ``"false"`` is not False (P12)."""
+    if isinstance(value, bool):
+        return value
+    raise ValueError(f"'{name}': must be true or false (got {value!r})")
 
 
 def _auto_or_float(value: Any, name: str) -> float | None:
@@ -357,6 +366,11 @@ def load(path: str | Path, overrides: dict | None = None, *,
     raw = yaml.safe_load(path.read_text(encoding="utf-8")) or {}
     if overrides:
         raw = apply_overrides(raw, overrides)
+    # Validate before building anything: a bad definition must fail here, with
+    # every problem named, and never start a run (audit P12).
+    errors = validate_raw(raw)
+    if errors:
+        raise ConfigError(errors)
     return build(raw, source_path=path, snapshot=snapshot)
 
 
@@ -470,6 +484,10 @@ def build(raw: dict, source_path=None, *, snapshot: bool = False) -> Params:
             raise ValueError(f"driver file {cand} must contain a mapping of driver items")
         if isinstance(d, dict):
             loaded = {**loaded, **{k: v for k, v in d.items() if k != "file"}}
+        # the driver file is user input too: validate it here, once merged
+        driver_errors = validate_raw({"driver": loaded})
+        if driver_errors:
+            raise ConfigError(driver_errors)
         d = loaded
 
     _len = _auto_or_float(_get(h, "length", "horn", default="auto"), "horn.length")
@@ -510,7 +528,8 @@ def build(raw: dict, source_path=None, *, snapshot: bool = False) -> Params:
         segments=int(_get(s, "segments", "simulation", 200)),
         observation_distance=float(_get(s, "observation_distance", "simulation", 1.0)),
         directivity=str(_get(s, "directivity", "simulation", "piston")),
-        half_space=bool(_get(s, "half_space", "simulation", mt != "sphere")),
+        half_space=_bool(_get(s, "half_space", "simulation", mt != "sphere"),
+                         "simulation.half_space"),
     )
 
     a = raw.get("ath", {}) or {}
@@ -525,7 +544,7 @@ def build(raw: dict, source_path=None, *, snapshot: bool = False) -> Params:
         term_n=float(_get(a, "term_n", "ath", 4.0)),
         os_k=float(_get(a, "os_k", "ath", 1.0)),
         coverage_angle=float(_get(a, "coverage_angle", "ath", 45.0)),
-        rollback=bool(_get(a, "rollback", "ath", False)),
+        rollback=_bool(_get(a, "rollback", "ath", False), "ath.rollback"),
         rollback_start=float(_get(a, "rollback_start", "ath", 0.6)),
         rollback_angle=float(_get(a, "rollback_angle", "ath", 180.0)),
         mesh=AthMesh(**{k: am.get(k, getattr(default_mesh, k)) for k in default_mesh.__dict__}),
@@ -551,9 +570,9 @@ def build(raw: dict, source_path=None, *, snapshot: bool = False) -> Params:
     o = raw.get("output", {}) or {}
     out = Output(
         dir=str(_get(o, "dir", "output", "results")),
-        csv=bool(_get(o, "csv", "output", True)),
-        plots=bool(_get(o, "plots", "output", True)),
-        report_md=bool(_get(o, "report_md", "output", True)),
+        csv=_bool(_get(o, "csv", "output", True), "output.csv"),
+        plots=_bool(_get(o, "plots", "output", True), "output.plots"),
+        report_md=_bool(_get(o, "report_md", "output", True), "output.report_md"),
     )
 
     return Params(meta=dict(raw.get("meta", {}) or {}), target=target, horn=horn,

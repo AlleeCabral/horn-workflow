@@ -256,7 +256,11 @@ def test_stage_one_loads_the_snapshot_it_wrote(tmp_path, monkeypatch):
     monkeypatch.setattr(o.config, "load", spy)
     s = run_pipeline(EXAMPLE, out_root=tmp_path, limits={"wall_mm": 18.0})
     assert seen, "the pipeline load its definition"
-    assert seen[0] == Path(s["run_dir"]) / "inputs" / "definition.yaml"
+    snapshot = Path(s["run_dir"]) / "inputs" / "definition.yaml"
+    # first load is the pre-flight validation guard (P12): it must not need a run
+    # directory, and it must not be the load the physics is built from
+    assert seen[0] == Path(EXAMPLE)
+    assert seen[-1] == snapshot
 
 
 # --------------------------------------------------------------- sensitivity

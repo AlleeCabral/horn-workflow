@@ -500,7 +500,12 @@ class Pipeline:
 
 
 def run_pipeline(param_path, out_root="runs", limits=None, progress=None) -> dict:
-    """Convenience entry point: run the whole pipeline and return a summary."""
+    """Convenience entry point: run the whole pipeline and return a summary.
+
+    The definition is validated first, before the run directory exists: a typo
+    must not leave a half-written run behind (audit P12).
+    """
+    config.load(param_path)
     return Pipeline(param_path, out_root=out_root, limits=limits,
                     progress=progress).run()
 
