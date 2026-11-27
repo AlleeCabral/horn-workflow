@@ -99,6 +99,19 @@ def test_state_rejects_unknown_schema_version():
         load_state(bad)
 
 
+def test_state_records_the_run_status_and_refuses_an_unknown_one():
+    """A run says how it ended, or it is not a state at all (audit S6)."""
+    import pytest
+    st = DesignState()
+    st.set_run_status("running")
+    assert st.run["status"] == "running"
+    for allowed in ("completed", "failed", "interrupted"):
+        st.set_run_status(allowed)
+        assert st.run["status"] == allowed
+    with pytest.raises(ValueError):
+        st.set_run_status("finished")
+
+
 # ---------------------------------------------------------------- config units
 def test_config_unit_conversion():
     p = config.load(EXAMPLE)

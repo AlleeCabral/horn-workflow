@@ -101,10 +101,17 @@ class AppActions:
         return max(cands, key=lambda p: p.name) if cands else None
 
     def runs(self) -> list:
+        """Every run folder that has a state, newest first, with how it ended.
+
+        ``state.json`` is written at run start and after every stage (audit S6),
+        so an interrupted or failed run is listed here instead of being an
+        invisible directory; ``status`` says which it was.
+        """
         out = []
         for p in sorted(self.run_root.iterdir(), key=lambda q: q.name, reverse=True):
             if p.is_dir() and (p / "state.json").is_file():
-                out.append({"run_id": p.name, "path": str(p.relative_to(self.root))})
+                out.append({"run_id": p.name, "path": str(p.relative_to(self.root)),
+                            "status": self._run_status(p)})
         return out
 
     def select_run(self, run_id) -> dict:
@@ -117,15 +124,27 @@ class AppActions:
     def _state(self):
         if self.run_dir is None:
             return None
-        path = self.run_dir / "state.json"
+        return self._state_of(self.run_dir)
+
+    def _state_of(self, run_dir: Path):
+        """Load ``run_dir/state.json``: absent means a first run, unreadable does not."""
+        path = Path(run_dir) / "state.json"
         if not path.is_file():
             return None
         try:
             return load_state_file(path)
         except Exception as exc:              # noqa: BLE001 - it must be visible
             raise _StateUnreadable(
-                f"{path.name} in run {self.run_dir.name!r} cannot be read: "
+                f"{path.name} in run {Path(run_dir).name!r} cannot be read: "
                 f"{exc}") from exc
+
+    def _run_status(self, run_dir: Path):
+        """``state.run.status`` for the run list, or None when it cannot be read."""
+        try:
+            st = self._state_of(run_dir)
+        except _StateUnreadable:
+            return None
+        return ((st.run or {}).get("status") if st is not None else None)
 
     def _require_run(self, run_id) -> Path:
         """The run this mutating call is for, or a structured refusal.
@@ -323,16 +342,20 @@ class AppActions:
         """Structured progress: the run lock plus the authoritative stage state.
 
         The browser never parses ``logs.jsonl``; everything it shows is assembled
-        here from the pipeline's own callback and from ``state.json``.
+        here from the pipeline's own callback and from ``state.json``.  While a
+        run is in flight the counts come from that run, not from whichever run
+        was selected before it (audit S6); ``stages_passed`` counts a stage that
+        is deliberately ``skipped`` as done, so a healthy run reaches 100%.
         """
         with self._lock:
             live = dict(self._run)
         messages = list(live.pop("messages", None) or [])
+        run_dir = self._progress_run_dir(live)
         stages = []
-        total = passed = 0
-        if self.run_dir is not None:
+        total = done = 0
+        if run_dir is not None:
             try:
-                st = self._state()
+                st = self._state_of(run_dir)
             except _StateUnreadable:
                 st = None
             if st is not None:
@@ -341,7 +364,7 @@ class AppActions:
                     stages.append({"stage": name, "status": status,
                                    "detail": str((rec or {}).get("detail", "") or "")})
                 total = len(stages)
-                passed = sum(1 for s in stages if s["status"] == "passed")
+                done = sum(1 for s in stages if s["status"] in ("passed", "skipped"))
         return {
             "state": live.get("state"),
             "run_id": live.get("run_id"),
@@ -354,11 +377,31 @@ class AppActions:
             "messages": messages,
             "stages": stages,
             "stages_total": total,
-            "stages_passed": passed,
-            "percent": (round(100.0 * passed / total) if total else 0),
-            "run_dir": (str(self.run_dir.relative_to(self.root))
-                        if self.run_dir else None),
+            "stages_passed": done,
+            "percent": (round(100.0 * done / total) if total else 0),
+            "run_dir": (str(run_dir.relative_to(self.root)) if run_dir else None),
         }
+
+    def _progress_run_dir(self, live: dict) -> Path | None:
+        """The run ``progress()`` describes: the one in flight, else the selection.
+
+        A runner reports its run id only when it returns, but its run folder is
+        the newest one on disk, because run ids sort by UTC timestamp.  Reading
+        it is what keeps the bar on this run instead of the previous one (S6).
+        """
+        if live.get("state") == "running":
+            newest = self._newest_run()
+            if newest is not None:
+                return newest
+        if self.run_dir is not None:
+            return self.run_dir
+        run_id = live.get("run_id")
+        if not run_id:
+            return None
+        try:
+            return safe_under(self.run_root, run_id)
+        except ApiError:
+            return None
 
     # --------------------------------------------------------------- import
     def import_vips(self, *, run_id, subdir=None, tolerance_db=None) -> dict:

@@ -325,6 +325,60 @@ def _stage_names(a):
     return list((st.stages or {}).keys())
 
 
+def test_completed_run_progress_is_100_percent(project):
+    """The optional BEM stage is skipped by design; done is done (audit S6)."""
+    a = _actions(project)
+    a.freeze(dict(ANSWERS))
+    a.start_run(wait=True)
+    prog = a.progress()
+    assert prog["state"] == "done"
+    assert prog["percent"] == 100
+    assert prog["stages_passed"] == prog["stages_total"]
+
+
+def test_progress_counts_the_run_in_flight_not_the_selected_one(project):
+    """The id is only known when the runner returns; the state is not (audit S6)."""
+    ready = threading.Event()
+    release = threading.Event()
+
+    def runner(path, out_root, limits, progress):
+        from hornflow.domain.state import DesignState
+        from hornflow.io.state_store import save_state
+
+        # sorts after any real run id, which is a UTC timestamp
+        run_dir = Path(out_root) / "run_29991231T235959Z_live"
+        st = DesignState()
+        st.run = {"run_id": run_dir.name, "status": "running"}
+        st.set_stage("INPUT_AUDIT", "passed")
+        save_state(st, run_dir / "state.json")
+        progress("[INPUT_AUDIT]")
+        ready.set()
+        release.wait(timeout=20)
+        return {"run_id": run_dir.name}
+
+    a = _actions(project, runner=runner)
+    a.freeze(dict(ANSWERS))
+    a.start_run()
+    try:
+        assert ready.wait(timeout=20)
+        prog = a.progress()
+        assert prog["run_id"] is None          # not yet reported by the runner
+        assert [s["stage"] for s in prog["stages"]] == ["INPUT_AUDIT"]
+        assert prog["percent"] == 100
+    finally:
+        release.set()
+
+
+def test_runs_show_how_each_run_ended(project):
+    """An interrupted run is listed, and it says so (audit S6)."""
+    proj, run_id = project
+    state_path = proj / "runs" / run_id / "state.json"
+    update_state(state_path, lambda st: st.set_run_status("interrupted"))
+    a = _actions(project)
+    (entry,) = [r for r in a.runs() if r["run_id"] == run_id]
+    assert entry["status"] == "interrupted"
+
+
 # --------------------------------------------------------------------------- #
 #  4. decisions - an audit record that never rewrites a measurement
 # --------------------------------------------------------------------------- #

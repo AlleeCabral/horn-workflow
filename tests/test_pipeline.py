@@ -9,12 +9,15 @@ import json
 import sys
 from pathlib import Path
 
+import pytest
+
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 
 from hornflow.workflow import run_pipeline, Stage                          # noqa: E402
 from hornflow.workflow.stages import STAGE_ORDER, ready                    # noqa: E402
 from hornflow.domain.state import SCHEMA_VERSION                           # noqa: E402
+from hornflow.io.state_store import load_state_file                        # noqa: E402
 
 EXAMPLE = ROOT / "params" / "horn_jbl_1200b.yaml"
 
@@ -61,6 +64,8 @@ def test_state_is_valid_and_reloadable(tmp_path):
     st = load_state_file(Path(s["run_dir"], "state.json"))
     assert st.schema_version == SCHEMA_VERSION
     assert st.stage_status("REPORT_AND_EXPORT") == "passed"
+    # a finished run says so, so an interrupted one cannot look the same
+    assert st.run["status"] == "completed"
     assert len(st.fold_candidates) >= 3
     assert st.simulation_runs
     # the normalized run schema carries both excursion conventions
@@ -89,6 +94,59 @@ def test_stage_dag_is_respected():
     assert ready(Stage.INPUT_AUDIT, {})
     assert not ready(Stage.FOLD_TOPOLOGY_GENERATION,
                      {Stage.IDEAL_ACOUSTIC_OPTIMIZATION.value: {"status": "pending"}})
+
+
+# ------------------------------------------------------ failures and interrupts
+def test_zero_valid_folds_is_data_not_a_crash(tmp_path, monkeypatch):
+    """No valid fold is an engineering answer, not a TypeError (audit S5).
+
+    The plan forced this with ``max_fold_count: 0``, but a straight fold has no
+    bends, so it stays valid and the failure path is never reached.  Returning
+    no candidates at all is the same case, one step earlier.
+    """
+    from hornflow import fold
+
+    monkeypatch.setattr(fold, "generators", lambda: [])
+    s = _run(tmp_path, limits={"wall_mm": 18.0})
+    st = load_state_file(Path(s["run_dir"]) / "state.json")
+    rec = st.stages["FOLD_GEOMETRY_VALIDATION"]
+    assert rec["status"] == "failed"
+    assert rec["failure"]["recoverable"] is False
+    assert rec["failure"]["category"] == "GEOMETRY"
+
+
+def test_interrupted_run_is_listed(tmp_path, monkeypatch):
+    from hornflow.workflow import orchestrator as o
+
+    def boom(self):
+        raise KeyboardInterrupt
+
+    monkeypatch.setattr(o.Pipeline, "stage_architecture", boom)
+    with pytest.raises(KeyboardInterrupt):
+        run_pipeline(EXAMPLE, out_root=tmp_path)
+    (run_dir,) = tmp_path.iterdir()
+    st = load_state_file(run_dir / "state.json")
+    assert st.run["status"] == "interrupted"
+    # every stage that finished before the interrupt is already on disk
+    assert st.stages["PHYSICAL_FEASIBILITY"]["status"] == "passed"
+
+
+def test_a_stage_exception_is_recorded_and_reraised(tmp_path, monkeypatch):
+    from hornflow.workflow import orchestrator as o
+
+    def boom(self):
+        raise RuntimeError("solver exploded")
+
+    monkeypatch.setattr(o.Pipeline, "stage_architecture", boom)
+    with pytest.raises(RuntimeError, match="solver exploded"):
+        run_pipeline(EXAMPLE, out_root=tmp_path)
+    (run_dir,) = tmp_path.iterdir()
+    st = load_state_file(run_dir / "state.json")
+    assert st.run["status"] == "failed"
+    rec = st.stages["ARCHITECTURE_SCREENING"]
+    assert rec["status"] == "failed"
+    assert rec["failure"]["category"] == "EXCEPTION"
+    assert rec["failure"]["failed_checks"] == ["RuntimeError('solver exploded')"]
 
 
 if __name__ == "__main__":
