@@ -23,8 +23,7 @@ import pytest
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 
-from hornflow.app.actions import (ACCEPT_REASONS, ApiError, AppActions,  # noqa: E402
-                                  safe_under)
+from hornflow.app.actions import ACCEPT_REASONS, ApiError, safe_under  # noqa: E402
 from hornflow.app.brief import BriefStore, slugify, validate_values      # noqa: E402
 from hornflow.app.server import create_server                            # noqa: E402
 
@@ -40,27 +39,12 @@ ANSWERS = {
 }
 
 
-@pytest.fixture
-def project(tmp_path):
-    """A throwaway project: a copy of params/ plus a copy of one real run."""
-    proj = tmp_path / "proj"
-    shutil.copytree(ROOT / "params", proj / "params")
-    src = max((ROOT / "runs").glob("run_*"))
-    shutil.copytree(src, proj / "runs" / src.name)
-    return proj, src.name
+from conftest import _actions, load_state_file, update_state  # noqa: E402
 
 
 def _store(project):
     proj, _ = project
     return BriefStore(proj, base_definition=proj / "params" / "horn_jbl_1200b.yaml")
-
-
-def _actions(project, *, runner=None, run_dir=None):
-    proj, run_id = project
-    return AppActions(proj, base_definition=proj / "params" / "horn_jbl_1200b.yaml",
-                      run_dir=(run_dir if run_dir is not None
-                               else proj / "runs" / run_id),
-                      author="tester", runner=runner)
 
 
 # --------------------------------------------------------------------------- #
