@@ -187,8 +187,9 @@ Every request passes a guard before any route runs, static files included:
 - the `Host` header must be a loopback name (`127.0.0.1`, `localhost`, `::1`) or
   the address the server was bound to, on the bound port — this is what a
   DNS-rebinding page cannot forge, so `403 bad_host`;
-- an `Origin` header, when present, must be the same host and port — `403
-  bad_origin` (a non-browser client such as `curl` sends none, and is fine);
+- an `Origin` header, when present, must be the same host on the bound port (a
+  missing port means 80, the http default) — `403 bad_origin` (a non-browser
+  client such as `curl` sends none, and is fine);
 - a POST body must be `application/json` — `415 bad_content_type`;
 - `Content-Length` must be an integer — `400 bad_length`.
 
