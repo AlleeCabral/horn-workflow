@@ -109,6 +109,9 @@ def main(argv=None) -> int:
             print(f"error: {exc}", file=sys.stderr)
             return 2
         v = res["validation"]
+        from .io.state_store import load_state_file
+        stored_state = ((load_state_file(run_dir / "state.json").validation or {})
+                        .get("bem_manual") or {}).get("state")
         for c in v["checks"]:
             print(f"  [{'pass' if c['passed'] else 'FAIL'}] {c['name']}: {c['detail']}")
         for w in v["warnings"]:
@@ -118,7 +121,9 @@ def main(argv=None) -> int:
             print(f"  vs 1-D reference: mean {m['mean_diff_db']:+.2f} dB, "
                   f"worst {m['worst_diff_db']:.2f} dB "
                   f"(tolerance {m['tolerance_db']:.1f} dB, {m['n_points']} points)")
-        print(f"  manual-solve state: {res['state']}")
+        print(f"  manual-solve state: {stored_state}  (what state.json holds)")
+        print(f"  attempt: {'passed' if v['passed'] else 'failed'} "
+              f"(this import: {res['state']})")
         print(f"  report: {res['report']}")
         return 0 if v["passed"] else 1
 

@@ -417,13 +417,28 @@ def pin_graph_group(manifest, manifest_path, validation, state: str) -> bool:
 # --------------------------------------------------------------------------- #
 #  a short, traceable report of the return path
 # --------------------------------------------------------------------------- #
-def validation_md(result: dict, *, project: str = "", run_id: str = "") -> str:
+def validation_md(result: dict, *, project: str = "", run_id: str = "",
+                  stored_state: str | None = None) -> str:
+    """A short, traceable report of one import attempt.
+
+    ``stored_state`` is what ``state.json`` holds afterwards (the last accepted
+    import).  When it is given, the header says it apart from this attempt's own
+    answer, because for a failed attempt the two differ (review of #11).
+    """
     v = result["validation"]
     lines = [
         f"# Manual BEM import - {project}" + (f" (`{run_id}`)" if run_id else ""),
         "",
-        f"**State after import: `{result['state']}`**"
-        + ("" if v["passed"] else "  (validation failed - re-export and retry)"),
+    ]
+    failed_note = "" if v["passed"] else "  (validation failed - re-export and retry)"
+    if stored_state is None:
+        lines.append(f"**State after import: `{result['state']}`**{failed_note}")
+    else:
+        lines += [
+            f"**Run state (stored, last accepted import): `{stored_state}`**",
+            f"**This attempt: `{result['state']}`**{failed_note}",
+        ]
+    lines += [
         "",
         "| check | severity | result | detail |",
         "| --- | --- | --- | --- |",
