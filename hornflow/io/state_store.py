@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import json
 import logging
+import math
 import threading
 from pathlib import Path
 from typing import Callable, TypeVar
@@ -25,9 +26,27 @@ LOG = logging.getLogger(__name__)
 STATE_LOCK = threading.RLock()
 
 
+def json_safe(value):
+    """Replace non-finite floats with ``None``, recursively.
+
+    ``NaN`` and ``inf`` are not JSON: Python writes them as bare tokens that a
+    strict parser (and the browser) rejects.  An unknown number is stored as
+    null, which is what the schema means by "not known" (audit P6, S11).
+    """
+    if isinstance(value, float):
+        return value if math.isfinite(value) else None
+    if isinstance(value, dict):
+        return {k: json_safe(v) for k, v in value.items()}
+    if isinstance(value, (list, tuple)):
+        return [json_safe(v) for v in value]
+    return value
+
+
 def save_state(state: DesignState, path: str | Path) -> Path:
     path = Path(path)
-    data = (json.dumps(state.to_dict(), indent=2, sort_keys=True) + "\n").encode("utf-8")
+    # allow_nan=False makes a regression loud instead of writing invalid JSON
+    data = (json.dumps(json_safe(state.to_dict()), indent=2, sort_keys=True,
+                       allow_nan=False) + "\n").encode("utf-8")
     with STATE_LOCK:
         atomic_write(path, data)
     return path

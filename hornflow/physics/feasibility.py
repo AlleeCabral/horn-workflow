@@ -15,6 +15,7 @@ from dataclasses import dataclass, field, asdict
 import numpy as np
 
 from ..domain.evidence import EvidenceLabel
+from ..domain.excursion import RMS_TO_PEAK
 
 P_REF = 20.0e-6
 _SPL_1W = 112.1  # dB re 20uPa @1m for 100% efficiency (reference-efficiency form)
@@ -29,7 +30,7 @@ class Feasibility:
     mouth_adequate: bool = False
     path_adequate: bool = False
     displacement_spl_db: float = 0.0
-    thermal_spl_db: float = 0.0
+    thermal_spl_db: float | None = None      # None: the driver declares no rating
     throat_compression: float = 1.0
     compression_note: str = ""
     boundary: str = ""
@@ -81,10 +82,10 @@ class FeasibilityEvaluator:
             f.limiting_factors.append("mouth-limited")
         if not f.path_adequate:
             f.limiting_factors.append("path-limited")
-        if f.displacement_spl_db < f.thermal_spl_db - 3.0:
-            f.limiting_factors.append("displacement-limited")
-        elif f.thermal_spl_db != f.thermal_spl_db:      # NaN: no thermal rating given
+        if f.thermal_spl_db is None:                    # no rating: an unknown limit
             f.limiting_factors.append("thermal-limit-unknown")
+        elif f.displacement_spl_db < f.thermal_spl_db - 3.0:
+            f.limiting_factors.append("displacement-limited")
         else:
             f.limiting_factors.append("thermally-limited")
         if f.throat_compression > 2.0:
@@ -115,19 +116,31 @@ def _compression_note(x: float) -> str:
 
 
 def _displacement_spl(f, Sd, Xmax, rho, c, half_space=True, r=1.0) -> float:
-    """On-axis SPL from displacement alone: p = rho*w^2*Sd*X/(opening*pi*r)."""
+    """On-axis SPL from displacement alone, rms-referenced.
+
+    p_peak = rho*w^2*Sd*X/(opening*pi*r) is a *peak* pressure (Xmax is a peak
+    excursion), while the 20 uPa reference is an rms level, so the pressure is
+    divided by :data:`RMS_TO_PEAK` before the log.  The old form reported this
+    figure 3.01 dB high, in the unsafe direction (audit P5).
+    """
     if Xmax <= 0.0:
         return float("-inf")
     w = 2.0 * np.pi * f
     opening = 2.0 if half_space else 4.0
-    p = rho * w ** 2 * Sd * Xmax / (opening * np.pi * r)
-    return float(20.0 * np.log10(max(p, 1e-12) / P_REF))
+    p_peak = rho * w ** 2 * Sd * Xmax / (opening * np.pi * r)
+    p_rms = p_peak / RMS_TO_PEAK
+    return float(20.0 * np.log10(max(p_rms, 1e-12) / P_REF))
 
 
-def _thermal_spl(drv, rho, c) -> float:
-    """Reference-efficiency estimate of the thermal-limited mid-band SPL."""
+def _thermal_spl(drv, rho, c) -> float | None:
+    """Reference-efficiency estimate of the thermal-limited mid-band SPL, or None.
+
+    ``None`` means the driver declares no thermal rating.  An unknown safety
+    limit is named in ``limiting_factors`` as ``thermal-limit-unknown`` and is
+    never compared as a NaN (audit P6).
+    """
+    power = getattr(drv, "thermal_power", None)
+    if not power:
+        return None
     eta0 = (4.0 * np.pi ** 2 / c ** 3) * drv.fs ** 3 * drv.Vas / max(drv.Qes, 1e-6)
-    power = drv.thermal_power if getattr(drv, "thermal_power", None) else None
-    if power is None:
-        return float("nan")
     return float(_SPL_1W + 10.0 * np.log10(max(eta0, 1e-12) * power))

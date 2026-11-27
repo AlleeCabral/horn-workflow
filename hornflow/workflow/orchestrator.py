@@ -15,6 +15,7 @@ from ..architecture.base import DesignContext
 from ..architecture.front_loaded import build_master
 from ..critique import critic
 from ..domain.evidence import code_version
+from ..domain.excursion import normalize_convention
 from ..domain.ids import stable_id
 from ..domain.state import DesignState, SCHEMA_VERSION
 from ..domain.limits import Constraint, InputStatus
@@ -148,16 +149,26 @@ class Pipeline:
         _, self.master = build_master(p, "folded_horn")
         self.feasibility = FeasibilityEvaluator().evaluate(p, self.master)
         self.state.project = {"name": p.project, "author": p.meta.get("author", "")}
+        drv = p.driver
+        xmax_peak = drv.Xmax_one_way_peak
         self.state.driver = {
-            "name": p.driver.name, "Re_ohm": p.driver.Re, "Fs_hz": p.driver.fs,
-            "Qts": p.driver.Qts, "Vas_l": p.driver.Vas * 1e3,
-            "Sd_cm2": p.driver.Sd * 1e4, "Xmax_mm": (p.driver.Xmax or 0) * 1e3,
-            "Xmax_convention": "one_way",
+            "name": drv.name, "Re_ohm": drv.Re, "Fs_hz": drv.fs,
+            "Qts": drv.Qts, "Vas_l": drv.Vas * 1e3,
+            "Sd_cm2": drv.Sd * 1e4,
+            # unknown is null, never 0: a 0 would count as an answered value (S11)
+            "Xmax_mm": None if drv.Xmax is None else drv.Xmax * 1e3,
+            "Xmax_convention": normalize_convention(
+                getattr(drv, "Xmax_convention", None)),
+            "Xmax_one_way_peak_mm": None if xmax_peak is None else xmax_peak * 1e3,
         }
         self.state.constraints = {
             "acoustic": {"f_low_hz": p.target.f_low, "f_high_hz": p.target.f_high},
-            "physical": {"depth_mm": (p.horn.length or 0) * 1e3,
-                         "mouth_area_cm2": (p.horn.mouth_area or 0) * 1e4},
+            # 'auto' stays null here too: it is not an answered dimension (S11)
+            "physical": {
+                "depth_mm": None if p.horn.length is None else p.horn.length * 1e3,
+                "mouth_area_cm2": (None if p.horn.mouth_area is None
+                                   else p.horn.mouth_area * 1e4),
+            },
             "electrical": {"voltage_vrms": p.simulation.voltage},
             "manufacturing": {"method": "additive+plywood"},
         }
