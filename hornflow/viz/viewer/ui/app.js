@@ -443,16 +443,15 @@
       imp.addEventListener('click', function () {
         post('/api/import', { run_id: currentRunId() }).then(function (out) {
           applyView(out.view);
-          var st = out.state || 'no state';
-          var msg = (st === 'BEM_VALIDATED')
-            ? 'Imported and compared: BEM_VALIDATED'
-            : (st === 'BEM_ACCEPTED_WITH_TOLERANCE')
+          var stored = out.stored_state || '';
+          var failed = (out.attempt_passed === false);
+          var msg = failed
+            ? 'Imported: this attempt failed; the run is still ' + stored
+            : (stored === 'BEM_ACCEPTED_WITH_TOLERANCE')
               ? 'Imported: accepted with a relaxed tolerance (not validated)'
-              : (st === 'BEM_REJECTED')
-                ? 'Imported: BEM_REJECTED - the difference is over tolerance'
-                : 'Imported: ' + st;
-          note(msg, (st === 'BEM_VALIDATED') ? 'ok'
-                    : (st === 'MANUAL_SOLVE_PENDING' ? 'bad' : 'warn'));
+              : 'Imported: ' + stored;
+          note(msg, failed ? 'bad'
+                    : (stored === 'BEM_VALIDATED' ? 'ok' : 'warn'));
         }).catch(function (e) { note('Import failed: ' + e.message, 'bad'); });
       });
       btns.appendChild(imp);

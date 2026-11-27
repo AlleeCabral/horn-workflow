@@ -434,9 +434,10 @@ def validation_md(result: dict, *, project: str = "", run_id: str = "",
     if stored_state is None:
         lines.append(f"**State after import: `{result['state']}`**{failed_note}")
     else:
+        attempt = (f"passed (`{result['state']}`)" if v["passed"] else "failed")
         lines += [
             f"**Run state (stored, last accepted import): `{stored_state}`**",
-            f"**This attempt: `{result['state']}`**{failed_note}",
+            f"**This attempt: {attempt}**{failed_note}",
         ]
     lines += [
         "",

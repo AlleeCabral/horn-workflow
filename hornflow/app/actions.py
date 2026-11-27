@@ -388,6 +388,8 @@ class AppActions:
         result = bem_import.import_into_run(run_dir, folder, tolerance_db=tolerance_db)
         return {"ok": bool((result.get("validation") or {}).get("passed")),
                 "state": result.get("state"),
+                "stored_state": result.get("stored_state"),
+                "attempt_passed": result.get("attempt_passed"),
                 "validation": result.get("validation"),
                 "report": result.get("report"),
                 "tolerance_db": (result.get("validation") or {}).get("tolerance_db"),

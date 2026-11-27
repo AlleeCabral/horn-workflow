@@ -248,16 +248,19 @@ def import_into_run(run_dir, folder, *, tolerance_db: float | None = None,
         history = list(rec.get("attempts") or [])
         index = len(history) + 1
         stamp = _stamp(attempt["utc"])
-        # Every attempt keeps its own report; only an accepted one also replaces
-        # the current report, so an older attempt link stays valid.
-        archive = bem_dir / "attempts" / f"{stamp}-{index}.md"
-        shown = (bem_dir / "bem_manual_report.md" if accepted else
-                 bem_dir / "attempts" / f"{stamp}-failed-{index}.md")
         result["state"] = outcome
         text = bem_manual.validation_md(result, project=params.project,
                                         run_id=run_id, stored_state=held)
-        atomic_write(archive, text.encode("utf-8"))
         if accepted:
+            # the accepted report is replaced, and archived so an older attempt
+            # link stays valid
+            shown = bem_dir / "bem_manual_report.md"
+            archive = bem_dir / "attempts" / f"{stamp}-{index}.md"
+            atomic_write(archive, text.encode("utf-8"))
+            atomic_write(shown, text.encode("utf-8"))
+        else:
+            # a failed attempt never touches the accepted report
+            shown = archive = bem_dir / "attempts" / f"{stamp}-failed-{index}.md"
             atomic_write(shown, text.encode("utf-8"))
         history.append({**attempt, "state_after": held,
                         "report": shown.relative_to(run_dir).as_posix(),
